@@ -38,10 +38,10 @@ function withMcpLogging<T>(
   });
 }
 
-const server = new McpServer({
-  name: "filecoin-nova",
-  version: "0.2.6",
-});
+const server = new McpServer(
+  { name: "filecoin-nova", version: "0.2.6" },
+  { capabilities: { logging: {} } }
+);
 
 // nova_deploy — Deploy a directory to Filecoin Onchain Cloud
 server.registerTool(
