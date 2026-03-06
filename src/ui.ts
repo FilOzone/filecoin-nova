@@ -1,0 +1,108 @@
+// Nova CLI visual design system
+
+// Colours
+export const c = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  italic: "\x1b[3m",
+  underline: "\x1b[4m",
+
+  // Foreground
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  blue: "\x1b[34m",
+  magenta: "\x1b[35m",
+  cyan: "\x1b[36m",
+  white: "\x1b[37m",
+  gray: "\x1b[90m",
+
+  // Background
+  bgGreen: "\x1b[42m",
+  bgBlue: "\x1b[44m",
+  bgMagenta: "\x1b[45m",
+  bgCyan: "\x1b[46m",
+};
+
+export const LOGO = `
+${c.cyan}${c.bold}  ╔╗╔╔═╗╦  ╦╔═╗${c.reset}
+${c.cyan}${c.bold}  ║║║║ ║╚╗╔╝╠═╣${c.reset}   ${c.dim}Deploy static websites to Filecoin Onchain Cloud${c.reset}
+${c.cyan}${c.bold}  ╝╚╝╚═╝ ╚╝ ╩ ╩${c.reset}
+`;
+
+export function banner() {
+  console.log(LOGO);
+}
+
+export function step(num: number, total: number, text: string) {
+  console.log(`  ${c.dim}[${num}/${total}]${c.reset} ${text}`);
+}
+
+export function info(text: string) {
+  console.log(`  ${c.dim}${text}${c.reset}`);
+}
+
+export function success(text: string) {
+  console.log(`  ${c.green}✔${c.reset} ${text}`);
+}
+
+export function fail(text: string) {
+  console.log(`  ${c.red}✘${c.reset} ${text}`);
+}
+
+export function working(text: string) {
+  console.log(`  ${c.yellow}⏳${c.reset} ${text}`);
+}
+
+export function label(key: string, value: string) {
+  console.log(`  ${c.dim}${key.padEnd(6)}${c.reset} ${c.bold}${value}${c.reset}`);
+}
+
+export function labelDim(key: string, value: string) {
+  console.log(`  ${c.dim}${key.padEnd(6)} ${value}${c.reset}`);
+}
+
+export function gutterLine(text: string) {
+  console.log(`  ${c.dim}┃${c.reset}  ${text}`);
+}
+
+export function gutterTop(title?: string) {
+  if (title) {
+    console.log(`  ${c.dim}┏━━ ${c.reset}${c.cyan}${title}${c.reset}`);
+  } else {
+    console.log(`  ${c.dim}┏${c.reset}`);
+  }
+}
+
+export function gutterBottom() {
+  console.log(`  ${c.dim}┗━━${c.reset}`);
+}
+
+export function deployComplete(result: {
+  cid: string;
+  ensName?: string;
+  txHash?: string;
+  ethLimoUrl?: string;
+}) {
+  console.log("");
+  console.log(`  ${c.green}${c.bold}━━━ Deploy complete ━━━${c.reset}`);
+  console.log("");
+  label("CID", result.cid);
+  if (result.ensName) {
+    label("ENS", result.ensName);
+    labelDim("TX", result.txHash || "");
+  }
+  console.log("");
+  if (result.ethLimoUrl) {
+    console.log(`  ${c.bgGreen}${c.bold} ${result.ethLimoUrl} ${c.reset}`);
+  } else {
+    console.log(`  ${c.bold}  https://${result.cid}.ipfs.dweb.link${c.reset}`);
+    info("No ENS configured — use an IPFS gateway to access your site.");
+  }
+  console.log("");
+}
+
+export function promptLabel(text: string) {
+  return `  ${c.cyan}?${c.reset} ${text} `;
+}

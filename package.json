@@ -1,0 +1,45 @@
+{
+  "name": "@filoz/filecoin-nova",
+  "version": "0.1.0",
+  "description": "Deploy static sites to Filecoin Onchain Cloud with ENS resolution",
+  "type": "module",
+  "main": "./dist/deploy.js",
+  "exports": {
+    ".": "./dist/deploy.js",
+    "./ens": "./dist/ens.js",
+    "./pin": "./dist/pin.js"
+  },
+  "bin": {
+    "nova": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "tsc --noEmit",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "keywords": [
+    "filecoin",
+    "ipfs",
+    "ens",
+    "deploy",
+    "decentralized",
+    "web3"
+  ],
+  "author": "FilOz",
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "multiformats": "^13.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
