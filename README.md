@@ -83,12 +83,11 @@ nova config
 
 ## Configuration
 
-Configuration can come from any of these sources (in order of priority):
+You don't need to configure anything upfront - `nova deploy` will prompt you. But if you want to avoid re-entering values, you have three options:
 
-1. **CLI flags** (`--ens`, `--rpc-url`, etc.)
-2. **Environment variables**
-3. **Credentials file** (`~/.config/filecoin-nova/credentials`, set up with `nova config`)
-4. **Interactive prompts** (if running in a terminal)
+1. **`nova config`** - saves to `~/.config/filecoin-nova/credentials` (recommended)
+2. **Environment variables** - override the credentials file
+3. **CLI flags** - `--ens`, `--rpc-url`, `--provider-id` (non-secret settings only)
 
 | Variable | Purpose |
 |----------|---------|
