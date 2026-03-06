@@ -9,29 +9,55 @@ import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
 import { resolveConfig } from "./config.js";
 
 /**
- * Redirect console.log/error to MCP log notifications during tool execution.
- * MCP servers must only write JSON-RPC to stdout — any stray console output
- * from deploy/ENS/pin functions would corrupt the protocol stream.
- * Instead, we capture output and send it as MCP log messages.
+ * Strip ANSI escape codes from subprocess output.
  */
 function stripAnsi(str: string): string {
   return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function withMcpLogging<T>(
-  log: (level: string, data: string) => Promise<void>,
+/**
+ * Redirect console.log/error during tool execution.
+ * - stdout is reserved for MCP JSON-RPC, so console.log is redirected to stderr
+ * - sends notifications/progress if client provided a progressToken
+ * - sends notifications/message (logging) for clients that support it
+ * - writes to stderr for clients that capture it
+ */
+function withProgress<T>(
+  extra: { _meta?: { progressToken?: string | number }; sendNotification: (n: any) => Promise<void> },
+  totalSteps: number,
   fn: () => Promise<T>
 ): Promise<T> {
   const origLog = console.log;
   const origErr = console.error;
+  let step = 0;
+  const progressToken = extra._meta?.progressToken;
+
+  const sendUpdate = (msg: string) => {
+    // stderr - always available
+    process.stderr.write(msg + "\n");
+
+    // notifications/progress - if client sent a progressToken
+    if (progressToken !== undefined) {
+      step++;
+      extra.sendNotification({
+        method: "notifications/progress",
+        params: { progressToken, progress: step, total: totalSteps, message: msg },
+      }).catch(() => {});
+    }
+
+    // notifications/message (logging) - for clients that support it
+    server.sendLoggingMessage({ level: "info", data: msg }).catch(() => {});
+  };
+
   console.log = (...args: any[]) => {
-    const msg = stripAnsi(args.map(String).join(" ")).trim();
-    if (msg) log("info", msg).catch(() => {});
+    const clean = stripAnsi(args.map(String).join(" ")).trim();
+    if (clean) sendUpdate(clean);
   };
   console.error = (...args: any[]) => {
-    const msg = stripAnsi(args.map(String).join(" ")).trim();
-    if (msg) log("warning", msg).catch(() => {});
+    const clean = stripAnsi(args.map(String).join(" ")).trim();
+    if (clean) sendUpdate(clean);
   };
+
   return fn().finally(() => {
     console.log = origLog;
     console.error = origErr;
@@ -39,7 +65,7 @@ function withMcpLogging<T>(
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.2.7" },
+  { name: "filecoin-nova", version: "0.2.8" },
   { capabilities: { logging: {} } }
 );
 
@@ -65,9 +91,8 @@ server.registerTool(
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
   },
-  async (params): Promise<CallToolResult> => {
-    const log = (level: string, data: string) => server.sendLoggingMessage({ level: level as any, data });
-    return withMcpLogging(log, async () => {
+  async (params, extra): Promise<CallToolResult> => {
+    return withProgress(extra, 20, async () => {
       try {
         const config = resolveConfig(process.env);
 
@@ -125,9 +150,8 @@ server.registerTool(
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
     }),
   },
-  async (params): Promise<CallToolResult> => {
-    const log = (level: string, data: string) => server.sendLoggingMessage({ level: level as any, data });
-    return withMcpLogging(log, async () => {
+  async (params, extra): Promise<CallToolResult> => {
+    return withProgress(extra, 10, async () => {
       try {
         const config = resolveConfig(process.env);
         const ensKey = params.ensKey || config.ensKey;
@@ -189,9 +213,8 @@ server.registerTool(
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
     }),
   },
-  async (params): Promise<CallToolResult> => {
-    const log = (level: string, data: string) => server.sendLoggingMessage({ level: level as any, data });
-    return withMcpLogging(log, async () => {
+  async (params, extra): Promise<CallToolResult> => {
+    return withProgress(extra, 3, async () => {
       try {
         if (!params.ensName.endsWith(".eth")) {
           return {
