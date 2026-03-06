@@ -25,7 +25,7 @@ function friendlyPinError(output: string, context: string): string {
     return (
       `${context}: Insufficient USDFC balance.\n\n` +
       "  Your Filecoin wallet needs USDFC to deploy to Filecoin Onchain Cloud.\n" +
-      "  Get USDFC at: https://app.filecoin.io/bridge\n"
+      "  Get USDFC at: https://www.sushi.com/filecoin/swap?token0=0x80b98d3aa09ffff255c3ba4a241111ff1262f045&token1=NATIVE\n"
     );
   }
 

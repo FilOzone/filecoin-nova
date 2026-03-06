@@ -25,7 +25,7 @@ function withMutedConsole<T>(fn: () => Promise<T>): Promise<T> {
 
 const server = new McpServer({
   name: "filecoin-nova",
-  version: "0.1.0",
+  version: "0.2.1",
 });
 
 // nova_deploy — Deploy a directory to Filecoin Onchain Cloud
