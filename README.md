@@ -6,48 +6,37 @@ Your site is stored onchain on the Filecoin network - no traditional hosting, no
 
 Use it as a **CLI** (`nova deploy`) or as an **MCP server** for AI-assisted deploys from Claude Desktop, Cursor, and other MCP clients.
 
-## Install
+---
+
+## Quick Start
 
 ```bash
 npm install -g filecoin-nova
-```
-
-## What You Need
-
-| What | Why | How to get it |
-|------|-----|---------------|
-| A Filecoin wallet with FIL and USDFC | FIL for gas, USDFC for storage | Swap on [Sushi](https://www.sushi.com/filecoin/swap?token0=0x80b98d3aa09ffff255c3ba4a241111ff1262f045&token1=NATIVE) |
-| An Ethereum wallet with ETH | Pays gas for ENS updates (optional) | Any Ethereum wallet |
-| An ENS domain (optional) | Gives your site a human-readable name | Register at [app.ens.domains](https://app.ens.domains) |
-
-## Deploy Your Site
-
-The simplest way - Nova will walk you through everything:
-
-```bash
 nova deploy
 ```
 
-Or specify everything upfront:
+Nova will walk you through everything - no setup needed beforehand.
+
+---
+
+## What You Need
+
+| What | Why | Get started |
+|------|-----|-------------|
+| [Node.js](https://nodejs.org/) 20.10+ | Runs Nova | Download from [nodejs.org](https://nodejs.org/) |
+| A wallet with FIL and USDFC | FIL for gas, USDFC for storage | [Set up MetaMask for Filecoin](https://docs.filecoin.io/basics/assets/metamask-setup), then [swap for USDFC](https://www.sushi.com/filecoin/swap?token0=0x80b98d3aa09ffff255c3ba4a241111ff1262f045&token1=NATIVE) |
+| A wallet with ETH *(optional)* | Pays gas for ENS updates | Same MetaMask wallet works |
+| An ENS domain *(optional)* | Human-readable name for your site | Register at [app.ens.domains](https://app.ens.domains) |
+
+---
+
+## Deploy Your Site
 
 ```bash
-nova deploy ./public --ens mysite.eth
-```
+# Interactive - prompts for everything
+nova deploy
 
-Nova accepts directories or archives (`.zip`, `.tar.gz`, `.tgz`, `.tar`).
-
-When it's done, your site is live at:
-- `https://mysite.eth.limo` (if you used ENS)
-- `https://<cid>.ipfs.dweb.link` (always available via IPFS gateway)
-
-## Commands
-
-### `nova deploy [path]`
-
-Deploy a website to Filecoin Onchain Cloud.
-
-```bash
-# Deploy a directory
+# Specify a directory
 nova deploy ./public
 
 # Deploy with an ENS domain
@@ -57,71 +46,74 @@ nova deploy ./dist --ens mysite.eth
 nova deploy site.zip
 ```
 
-### `nova ens <cid> --ens <name>`
+Nova accepts directories or archives (`.zip`, `.tar.gz`, `.tgz`, `.tar`).
 
-Point an ENS domain to an existing IPFS CID (without deploying).
+When it's done, your site is live at:
 
-```bash
-nova ens bafybei... --ens mysite.eth
-```
+> `https://mysite.eth.limo` - if you used ENS
+>
+> `https://<cid>.ipfs.dweb.link` - always available via IPFS gateway
 
-### `nova status --ens <name>`
+A **CID** (Content Identifier) is a unique fingerprint for your site's content on IPFS. It looks like `bafybei...` and never changes for the same content.
 
-Check what an ENS domain currently points to.
+---
 
-```bash
-nova status --ens mysite.eth
-```
+## Commands
 
-### `nova config`
+| Command | What it does |
+|---------|-------------|
+| `nova deploy [path]` | Deploy a website to Filecoin Onchain Cloud |
+| `nova ens <cid> --ens <name>` | Point an ENS domain to an existing CID |
+| `nova status --ens <name>` | Check what an ENS domain currently points to |
+| `nova config` | Save your wallet keys and defaults so you don't have to enter them each time |
 
-Save your wallet keys and defaults to `~/.config/filecoin-nova/credentials` so you don't have to enter them each time.
-
-```bash
-nova config
-```
-
-## Configuration
-
-You don't need to configure anything upfront - `nova deploy` will prompt you. But if you want to avoid re-entering values, you have three options:
-
-1. **`nova config`** - saves to `~/.config/filecoin-nova/credentials` (recommended)
-2. **Environment variables** - override the credentials file
-3. **CLI flags** - `--ens`, `--rpc-url`, `--provider-id` (non-secret settings only)
-
-| Variable | Purpose |
-|----------|---------|
-| `NOVA_PIN_KEY` | Filecoin wallet key - pays for storage |
-| `NOVA_ENS_KEY` | Ethereum wallet key - updates your ENS domain |
-| `NOVA_ENS_NAME` | Default ENS domain (so you don't need `--ens` every time) |
-| `NOVA_RPC_URL` | Custom Ethereum RPC (Nova uses public RPCs by default) |
-| `NOVA_PROVIDER_ID` | Specific storage provider ID |
-
-## Options
+**Options** available on all commands:
 
 | Flag | What it does |
 |------|-------------|
-| `--ens <name>` | ENS domain to point to your site |
-| `--rpc-url <url>` | Ethereum RPC URL |
+| `--ens <name>` | ENS domain (e.g. `mysite.eth`) |
+| `--rpc-url <url>` | Custom Ethereum RPC |
 | `--provider-id <id>` | Storage provider ID |
 | `--calibration` | Use testnet instead of mainnet |
 | `--json` | Machine-readable JSON output (for CI/scripts) |
 
+---
+
+## Configuration
+
+You don't need to configure anything upfront - `nova deploy` will prompt you. To avoid re-entering values:
+
+- **`nova config`** - saves wallet keys and defaults to `~/.config/filecoin-nova/credentials` *(recommended)*
+- **Environment variables** - `NOVA_PIN_KEY`, `NOVA_ENS_KEY`, `NOVA_ENS_NAME`, `NOVA_RPC_URL`, `NOVA_PROVIDER_ID`
+
+Environment variables override the credentials file.
+
+---
+
 ## CI / GitHub Actions
 
-Use `--json` for clean machine-readable output:
+Set your wallet key as a secret, then use `--json` for clean output:
+
+```yaml
+env:
+  NOVA_PIN_KEY: ${{ secrets.NOVA_PIN_KEY }}
+
+steps:
+  - run: npx filecoin-nova deploy ./dist --json
+```
 
 ```bash
-nova deploy ./dist --json
+# Output:
 # {"cid":"bafybei...","directory":"./dist","gatewayUrl":"https://bafybei....ipfs.dweb.link"}
-
-nova status --ens mysite.eth --json
-# {"ensName":"mysite.eth","contenthash":"...","url":"https://mysite.eth.limo"}
 ```
+
+In CI there are no interactive prompts - `NOVA_PIN_KEY` must be set as an environment variable (and `NOVA_ENS_KEY` if using ENS).
+
+---
 
 ## MCP Server
 
-Nova includes an MCP server for AI-assisted deploys. No global install needed. The MCP server reads wallet keys from `~/.config/filecoin-nova/credentials` (set up with `nova config`) or from environment variables.
+Nova includes an MCP server for AI-assisted deploys. No global install needed. Run `nova config` first to save your wallet keys, then add the server to your editor.
 
 ### Claude Code
 
@@ -134,8 +126,6 @@ claude mcp add filecoin-nova -- npx -y --package filecoin-nova nova-mcp
 Settings > MCP > Add MCP Server. Set command to `npx`, args to `-y --package filecoin-nova nova-mcp`.
 
 ### Cursor / Windsurf / VS Code
-
-Add to your MCP config file:
 
 | Editor | Config file |
 |--------|------------|
@@ -159,8 +149,10 @@ Add to your MCP config file:
 | Tool | What it does |
 |------|-------------|
 | `nova_deploy` | Deploy a website to Filecoin, optionally update ENS |
-| `nova_ens` | Point an ENS domain to an IPFS CID |
+| `nova_ens` | Point an ENS domain to a CID |
 | `nova_status` | Check what an ENS domain points to |
+
+---
 
 ## Use as a Library
 
@@ -177,20 +169,15 @@ console.log(result.cid);        // bafybei...
 console.log(result.ethLimoUrl);  // https://mysite.eth.limo
 ```
 
+---
+
 ## How It Works
 
 1. Nova uploads your site to [Filecoin Onchain Cloud](https://filecoin.cloud) using [filecoin-pin](https://github.com/filecoin-project/filecoin-pin), making it available via IPFS
-2. If you specified an ENS domain, Nova updates its contenthash to point to your site's IPFS CID
+2. If you specified an ENS domain, Nova updates its contenthash to point to your site's CID
 3. Anyone can access your site through an IPFS gateway or via `yourname.eth.limo`
 
 Storage costs are paid in USDFC (a stablecoin on Filecoin). A typical website costs well under 0.10 USDFC/month. FIL is needed for transaction gas on the Filecoin network.
-
-## Requirements
-
-- Node.js 20.10 or later
-- FIL for Filecoin gas fees
-- USDFC for storage costs
-- ETH for ENS gas fees (only if using ENS)
 
 ## License
 
