@@ -23,29 +23,13 @@ function stripAnsi(str: string): string {
  * - writes to stderr for clients that capture it
  */
 function withProgress<T>(
-  extra: { _meta?: { progressToken?: string | number }; sendNotification: (n: any) => Promise<void> },
-  totalSteps: number,
   fn: () => Promise<T>
 ): Promise<T> {
   const origLog = console.log;
   const origErr = console.error;
-  let step = 0;
-  const progressToken = extra._meta?.progressToken;
 
   const sendUpdate = (msg: string) => {
-    // stderr - always available
     process.stderr.write(msg + "\n");
-
-    // notifications/progress - if client sent a progressToken
-    if (progressToken !== undefined) {
-      step++;
-      extra.sendNotification({
-        method: "notifications/progress",
-        params: { progressToken, progress: step, total: totalSteps, message: msg },
-      }).catch(() => {});
-    }
-
-    // notifications/message (logging) - for clients that support it
     server.sendLoggingMessage({ level: "info", data: msg }).catch(() => {});
   };
 
@@ -65,7 +49,7 @@ function withProgress<T>(
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.2.8" },
+  { name: "filecoin-nova", version: "0.2.9" },
   { capabilities: { logging: {} } }
 );
 
@@ -91,8 +75,8 @@ server.registerTool(
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
   },
-  async (params, extra): Promise<CallToolResult> => {
-    return withProgress(extra, 20, async () => {
+  async (params): Promise<CallToolResult> => {
+    return withProgress(async () => {
       try {
         const config = resolveConfig(process.env);
 
@@ -150,8 +134,8 @@ server.registerTool(
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
     }),
   },
-  async (params, extra): Promise<CallToolResult> => {
-    return withProgress(extra, 10, async () => {
+  async (params): Promise<CallToolResult> => {
+    return withProgress(async () => {
       try {
         const config = resolveConfig(process.env);
         const ensKey = params.ensKey || config.ensKey;
@@ -213,8 +197,8 @@ server.registerTool(
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
     }),
   },
-  async (params, extra): Promise<CallToolResult> => {
-    return withProgress(extra, 3, async () => {
+  async (params): Promise<CallToolResult> => {
+    return withProgress(async () => {
       try {
         if (!params.ensName.endsWith(".eth")) {
           return {
