@@ -54,11 +54,11 @@ server.registerTool(
       "Optionally update an ENS domain to point to the deployed site. " +
       "Returns the IPFS CID and gateway URL. " +
       "This tool takes about 60 seconds to complete — do not retry if it seems slow. " +
-      "IMPORTANT: Requires a Filecoin wallet key. Before calling this tool, " +
-      "confirm with the user that credentials are configured by running " +
-      "'nova config' (interactive setup) or setting the NOVA_PIN_KEY environment variable. " +
-      "If the user also wants ENS, they need NOVA_ENS_KEY set too. " +
-      "Do NOT call this tool without confirming credentials first.",
+      "IMPORTANT: Wallet keys are read from the credentials file (~/.config/filecoin-nova/credentials) " +
+      "or environment variables (NOVA_PIN_KEY, NOVA_ENS_KEY). They cannot be passed as parameters. " +
+      "Before calling this tool, confirm with the user that they have run 'nova config' in their terminal " +
+      "to save their Filecoin wallet key. If using ENS, they also need an Ethereum wallet key saved. " +
+      "Do NOT call this tool without confirming credentials are set up first.",
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
       ensName: z.string().optional().describe("ENS domain to point to the site (e.g. mysite.eth)"),
@@ -119,9 +119,9 @@ server.registerTool(
     description:
       "Update an ENS domain's contenthash to point to an IPFS CID. " +
       "Requires an Ethereum wallet with ETH for gas. " +
-      "IMPORTANT: Before calling this tool, confirm with the user that credentials are configured " +
-      "by running 'nova config' (interactive setup) or setting the NOVA_ENS_KEY environment variable. " +
-      "Do NOT call this tool without confirming credentials first.",
+      "IMPORTANT: Wallet keys are read from the credentials file or NOVA_ENS_KEY environment variable. " +
+      "They cannot be passed as parameters. Before calling, confirm the user has run 'nova config' " +
+      "to save their Ethereum wallet key. Do NOT call without confirming credentials are set up first.",
     inputSchema: z.object({
       cid: z.string().describe("IPFS CID to point the ENS domain to"),
       ensName: z.string().describe("ENS domain (e.g. mysite.eth)"),
