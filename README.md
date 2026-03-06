@@ -123,10 +123,11 @@ Nova includes an MCP server for AI-assisted deploys. No global install needed.
 **Claude Code:**
 
 ```bash
-claude mcp add filecoin-nova -- npx -y --package @filoz/filecoin-nova nova-mcp
+claude mcp add filecoin-nova \
+  -e NOVA_PIN_KEY=your-filecoin-wallet-key \
+  -e NOVA_ENS_KEY=your-ethereum-wallet-key \
+  -- npx -y --package @filoz/filecoin-nova nova-mcp
 ```
-
-Then set your wallet keys as environment variables (`NOVA_PIN_KEY`, `NOVA_ENS_KEY`).
 
 **Claude Desktop** - add to `claude_desktop_config.json`:
 
