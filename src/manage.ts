@@ -6,7 +6,6 @@ import { privateKeyToAccount } from "viem/accounts";
 import { http } from "viem";
 import type { Hex } from "viem";
 
-
 export interface PieceInfo {
   pieceId: bigint;
   pieceCid: string;

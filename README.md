@@ -157,7 +157,7 @@ Cleanup is safe by default - `nova manage clean` only shows a plan without delet
 | `--provider-id <id>` | deploy | Storage provider ID |
 | `--clean` | deploy | After deploying, remove ALL other pieces (only new deploy is kept) |
 | `--calibration` | deploy, manage | Use testnet instead of mainnet |
-| `--json` | deploy, ens, status | Machine-readable JSON output (for CI/scripts) |
+| `--json` | deploy, ens, status, manage | Machine-readable JSON output (for CI/scripts) |
 | `--really-do-it` | manage clean | Execute the cleanup (without this, clean is a dry-run) |
 | `--keep <cid,...>` | manage clean | Keep specific CIDs, remove everything else |
 | `--remove <cid,...>` | manage clean | Remove specific CIDs only |

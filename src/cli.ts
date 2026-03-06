@@ -707,10 +707,6 @@ async function runManage(args: string[]) {
         let tag: string;
         if (allPending) {
           tag = `${c.dim}${center("removing", statusW)}${c.reset}`;
-        } else if (pendingCount > 0) {
-          tag = isLatest
-            ? `${c.green}${center("latest", statusW)}${c.reset}`
-            : `${c.yellow}${center("old", statusW)}${c.reset}`;
         } else {
           tag = isLatest ? `${c.green}${center("latest", statusW)}${c.reset}` : `${c.yellow}${center("old", statusW)}${c.reset}`;
         }
