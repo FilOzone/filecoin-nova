@@ -36,7 +36,10 @@ server.registerTool(
     description:
       "Deploy a static website directory to Filecoin Onchain Cloud. " +
       "Optionally update an ENS domain to point to the deployed site. " +
-      "Returns the IPFS CID and gateway URL.",
+      "Returns the IPFS CID and gateway URL. " +
+      "IMPORTANT: Requires a Filecoin wallet key. Before calling, check that credentials are configured " +
+      "by asking the user if they have run 'nova config' or set NOVA_PIN_KEY env var. " +
+      "If using ENS, NOVA_ENS_KEY is also needed.",
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
       ensName: z.string().optional().describe("ENS domain to point to the site (e.g. mysite.eth)"),
@@ -96,7 +99,9 @@ server.registerTool(
     title: "Update ENS Domain",
     description:
       "Update an ENS domain's contenthash to point to an IPFS CID. " +
-      "Requires an Ethereum wallet with ETH for gas.",
+      "Requires an Ethereum wallet with ETH for gas. " +
+      "IMPORTANT: Before calling, check that credentials are configured " +
+      "by asking the user if they have run 'nova config' or set NOVA_ENS_KEY env var.",
     inputSchema: z.object({
       cid: z.string().describe("IPFS CID to point the ENS domain to"),
       ensName: z.string().describe("ENS domain (e.g. mysite.eth)"),
