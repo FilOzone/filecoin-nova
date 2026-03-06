@@ -115,7 +115,12 @@ In CI there are no interactive prompts - `NOVA_PIN_KEY` must be set as an enviro
 
 ## MCP Server
 
-Nova includes an MCP server for AI-assisted deploys. No global install needed. Run `nova config` first to save your wallet keys, then add the server to your editor.
+Nova includes an MCP server for AI-assisted deploys. Save your wallet keys first, then add the server to your editor.
+
+```bash
+npm install -g filecoin-nova
+nova config
+```
 
 ### Claude Code
 
