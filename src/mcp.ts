@@ -6,7 +6,13 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 import { deploy } from "./deploy.js";
 import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
+import { listPieces, cleanPieces } from "./manage.js";
 import { resolveConfig } from "./config.js";
+
+function jsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    typeof val === "bigint" ? Number(val) : val, 2);
+}
 
 /**
  * Strip ANSI escape codes from subprocess output.
@@ -41,7 +47,7 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.2.14" },
+  { name: "filecoin-nova", version: "0.3.0" },
 );
 
 // nova_deploy — Deploy a directory to Filecoin Onchain Cloud
@@ -215,6 +221,127 @@ server.registerTool(
           url: contenthash
             ? `https://${params.ensName.replace(/\.eth$/, "")}.eth.limo`
             : null,
+        };
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: err.message }],
+        };
+      }
+    });
+  }
+);
+
+// nova_manage — List pinned pieces grouped by IPFS CID
+server.registerTool(
+  "nova_manage",
+  {
+    title: "List Pinned Pieces",
+    description:
+      "List all pinned pieces for this wallet, grouped by IPFS root CID. " +
+      "Shows piece counts, sizes, and identifies old/duplicate uploads that can be cleaned up. " +
+      "Pieces pending removal are marked. " +
+      "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
+      "Do NOT call without confirming credentials are set up first.",
+    inputSchema: z.object({
+      calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
+    }),
+  },
+  async (params): Promise<CallToolResult> => {
+    return redirectConsole(async () => {
+      try {
+        const config = resolveConfig(process.env);
+
+        if (!config.pinKey) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "No Filecoin wallet key found. The user needs to run 'nova config' in their terminal to save their wallet key." }],
+          };
+        }
+
+        const summaries = await listPieces({
+          pinKey: config.pinKey,
+          mainnet: !params.calibration,
+        });
+
+        return {
+          content: [{ type: "text" as const, text: jsonStringify({ datasets: summaries }) }],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: err.message }],
+        };
+      }
+    });
+  }
+);
+
+// nova_manage_clean — Remove old and duplicate pieces
+server.registerTool(
+  "nova_manage_clean",
+  {
+    title: "Clean Up Pieces",
+    description:
+      "Remove old and duplicate pinned pieces to reduce storage costs. " +
+      "By default, keeps the latest IPFS CID and removes everything else, " +
+      "including duplicate uploads of the same content. " +
+      "Use 'keepCids' to keep specific CIDs, or 'removeCids' to remove specific CIDs. " +
+      "WARNING: This permanently deletes pieces. Always run nova_manage first to review. " +
+      "Each piece requires a separate transaction — this may take a while for many pieces. " +
+      "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
+      "Do NOT call without confirming credentials are set up first. " +
+      "ALWAYS confirm with the user before calling this tool.",
+    inputSchema: z.object({
+      keepCids: z.string().optional().describe("Comma-separated CIDs to keep (removes everything else)"),
+      removeCids: z.string().optional().describe("Comma-separated CIDs to remove (keeps everything else)"),
+      keepCopies: z.boolean().optional().describe("Keep all copies of the same content (default: false, duplicates are removed)"),
+      dataSetId: z.number().optional().describe("Target a specific dataset ID (if wallet has multiple)"),
+      calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
+    }),
+  },
+  async (params): Promise<CallToolResult> => {
+    return redirectConsole(async () => {
+      try {
+        const config = resolveConfig(process.env);
+
+        if (!config.pinKey) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "No Filecoin wallet key found. The user needs to run 'nova config' in their terminal to save their wallet key." }],
+          };
+        }
+
+        if (params.keepCids && params.removeCids) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "Cannot use keepCids and removeCids together. Use keepCids to keep specific CIDs, or removeCids to remove specific CIDs." }],
+          };
+        }
+
+        const keepCids = params.keepCids ? params.keepCids.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+        const removeCids = params.removeCids ? params.removeCids.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+
+        const result = await cleanPieces({
+          pinKey: config.pinKey,
+          mainnet: !params.calibration,
+          keepCids,
+          removeCids,
+          dataSetId: params.dataSetId !== undefined ? BigInt(params.dataSetId) : undefined,
+          keepCopies: params.keepCopies,
+        });
+
+        const output = {
+          removed: result.removed,
+          failed: result.failed,
+          keptCids: result.keptCids,
+          txCount: result.txHashes.length,
+          ...(result.error && { error: result.error }),
+          note: "Removals are processed by the provider on a schedule. Pieces will show as 'removing' until fully processed.",
         };
 
         return {

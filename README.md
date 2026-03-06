@@ -67,6 +67,7 @@ A **CID** (Content Identifier) is a unique fingerprint for your site's content o
 | `nova deploy [path]` | Deploy a website to Filecoin Onchain Cloud |
 | `nova ens <cid> --ens <name>` | Point an ENS domain to an existing CID |
 | `nova status --ens <name>` | Check what an ENS domain currently points to |
+| `nova manage [clean]` | List or clean up old pinned pieces to reduce storage costs |
 | `nova config` | Save your wallet keys and defaults so you don't have to enter them each time |
 
 **Options:**
@@ -158,6 +159,8 @@ Settings > MCP > Add MCP Server. Set command to `npx`, args to `-y --package fil
 | `nova_deploy` | Deploy a website to Filecoin, optionally update ENS |
 | `nova_ens` | Point an ENS domain to a CID |
 | `nova_status` | Check what an ENS domain points to |
+| `nova_manage` | List all pinned pieces grouped by IPFS root CID |
+| `nova_manage_clean` | Remove old/duplicate pieces to reduce storage costs |
 
 ---
 

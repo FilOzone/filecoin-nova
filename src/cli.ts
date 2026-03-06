@@ -8,8 +8,15 @@ import { deploy } from "./deploy.js";
 import { getEnsContenthash, updateEnsContenthash } from "./ens.js";
 import { setupFilecoinPinPayments } from "./pin.js";
 import { resolveConfig, readCredentials, writeCredentials, credentialsPath } from "./config.js";
+import { listPieces, cleanPieces, type PieceInfo } from "./manage.js";
 import { ask, close } from "./prompt.js";
-import { c, fail, info, label, promptLabel, banner, success } from "./ui.js";
+import { c, fail, info, label, labelDim, promptLabel, banner, success } from "./ui.js";
+
+// BigInt-safe JSON serializer (converts bigint to number for output)
+function jsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    typeof val === "bigint" ? Number(val) : val, 2);
+}
 
 // Sentinel error for early exits — skips the error print in main().catch()
 class ExitError extends Error {
@@ -44,6 +51,7 @@ const HELP = `
     ${c.cyan}nova deploy${c.reset} [path] [options]        Deploy a directory or archive
     ${c.cyan}nova ens${c.reset} <cid> --ens <name>         Point ENS domain to an IPFS CID
     ${c.cyan}nova status${c.reset} [--ens <name>]          Check ENS contenthash
+    ${c.cyan}nova manage${c.reset} [clean]                 Manage pinned pieces and storage costs
     ${c.cyan}nova config${c.reset}                         Set up wallet keys and defaults
     ${c.cyan}nova help${c.reset}                           Show this help
     ${c.cyan}nova --version${c.reset}                      Show version
@@ -75,6 +83,8 @@ const HELP = `
     ${c.dim}$${c.reset} nova deploy ./dist --json
     ${c.dim}$${c.reset} nova ens bafybei... --ens mysite.eth
     ${c.dim}$${c.reset} nova status --ens mysite.eth --json
+    ${c.dim}$${c.reset} nova manage
+    ${c.dim}$${c.reset} nova manage clean --really-do-it
 `;
 
 function dirSize(dir: string, seen = new Set<number>()): number {
@@ -465,6 +475,458 @@ async function runEns(args: string[]) {
   }
 }
 
+async function runManage(args: string[]) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(`
+  ${c.cyan}${c.bold}Nova Manage${c.reset} ${c.dim}— Manage pinned pieces and storage costs${c.reset}
+
+  ${c.bold}Usage${c.reset}
+
+    ${c.cyan}nova manage${c.reset}                         List all pieces grouped by IPFS CID
+    ${c.cyan}nova manage clean${c.reset}                   Preview what would be removed (dry run)
+    ${c.cyan}nova manage clean --really-do-it${c.reset}     Remove old pieces and duplicate uploads
+
+  ${c.bold}Options (clean)${c.reset}
+
+    ${c.dim}--really-do-it${c.reset}        Required — confirms you want to delete pieces
+    ${c.dim}--keep <cid,...>${c.reset}      Keep these CIDs, remove everything else
+                         ${c.dim}(default: keep the latest CID only)${c.reset}
+    ${c.dim}--remove <cid,...>${c.reset}    Remove only these CIDs, keep everything else
+    ${c.dim}--keep-copies${c.reset}         Keep all copies of the same content
+                         ${c.dim}(default: duplicate uploads are removed)${c.reset}
+    ${c.dim}--dataset-id <id>${c.reset}     Target a specific dataset (if wallet has multiple)
+
+  ${c.bold}Options (shared)${c.reset}
+
+    ${c.dim}--calibration${c.reset}         Use calibration testnet (default: mainnet)
+    ${c.dim}--json${c.reset}                Output as JSON
+
+  ${c.bold}Examples${c.reset}
+
+    ${c.dim}$${c.reset} nova manage                             ${c.dim}# List all pieces${c.reset}
+    ${c.dim}$${c.reset} nova manage clean                       ${c.dim}# Preview cleanup (dry run)${c.reset}
+    ${c.dim}$${c.reset} nova manage clean --really-do-it        ${c.dim}# Keep latest, remove the rest${c.reset}
+    ${c.dim}$${c.reset} nova manage clean --remove bafybei... --really-do-it
+                                              ${c.dim}# Remove a specific CID${c.reset}
+    ${c.dim}$${c.reset} nova manage clean --remove bafybei...,bafybei... --really-do-it
+                                              ${c.dim}# Remove multiple CIDs${c.reset}
+    ${c.dim}$${c.reset} nova manage clean --keep bafybei...,bafybei... --really-do-it
+                                              ${c.dim}# Keep multiple CIDs, remove the rest${c.reset}
+    ${c.dim}$${c.reset} nova manage clean --keep-copies --really-do-it
+                                              ${c.dim}# Keep all copies (skip dedup)${c.reset}
+`);
+    earlyExit(0);
+  }
+
+  const { values, positionals: pos } = parseArgs({
+    args: args.slice(1),
+    options: {
+      keep: { type: "string" },
+      remove: { type: "string" },
+      "keep-copies": { type: "boolean", default: false },
+      "really-do-it": { type: "boolean", default: false },
+      "dataset-id": { type: "string" },
+      calibration: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+
+  const jsonMode = values.json!;
+  if (jsonMode) muteConsole();
+
+  const config = resolveConfig(process.env);
+  const mainnet = !values.calibration;
+
+  if (!config.pinKey) {
+    if (!process.stdin.isTTY) {
+      fail("NOVA_PIN_KEY env var is required.");
+      earlyExit(1, "NOVA_PIN_KEY env var is required.");
+    }
+    console.log("");
+    info("NOVA_PIN_KEY not set. Run 'nova config' to save your keys,");
+    info("or enter your Filecoin wallet key below.");
+    console.log("");
+    const key = await ask(promptLabel("Filecoin wallet private key:"));
+    if (!key) {
+      fail("Cannot manage without a Filecoin wallet key.");
+      earlyExit(1, "Cannot manage without a Filecoin wallet key.");
+    }
+    config.pinKey = key;
+  }
+
+  close();
+
+  const subcommand = pos[0];
+
+  if (!subcommand) {
+    info(`Querying ${mainnet ? "mainnet" : "calibration"}...`);
+    console.log("");
+
+    const summaries = await listPieces({ pinKey: config.pinKey, mainnet });
+
+    if (summaries.length === 0) {
+      if (jsonMode) {
+        unmuteConsole();
+        console.log(JSON.stringify({ datasets: [] }));
+      } else {
+        info("No datasets found for this wallet.");
+      }
+      return;
+    }
+
+    if (jsonMode) {
+      unmuteConsole();
+      console.log(jsonStringify({ datasets: summaries }));
+      return;
+    }
+
+    function formatSize(bytes: number): string {
+      if (bytes === 0) return "-";
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+      if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+      return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+    }
+
+    function center(text: string, width: number): string {
+      const pad = Math.max(0, width - text.length);
+      const left = Math.floor(pad / 2);
+      return " ".repeat(left) + text + " ".repeat(pad - left);
+    }
+
+    for (const ds of summaries) {
+      console.log(`  ${c.cyan}${c.bold}Dataset ${ds.dataSetId}${c.reset} ${c.dim}(${ds.providerName}, ${ds.activePieceCount} pieces)${c.reset}`);
+      console.log("");
+
+      if (ds.groups.length === 0) {
+        info("  No piece groups found.");
+        continue;
+      }
+
+      // Table layout
+      const cidW = 59;
+      const pcsW = 5;
+      const sizeW = 10;
+      const statusW = 8;
+
+      console.log(`  ${c.dim}${center("CID", cidW)}  ${center("Pcs", pcsW)}  ${center("Size", sizeW)}  ${center("Status", statusW)}${c.reset}`);
+      console.log(`  ${c.dim}${"─".repeat(cidW)}  ${"─".repeat(pcsW)}  ${"─".repeat(sizeW)}  ${"─".repeat(statusW)}${c.reset}`);
+
+      let totalSize = 0;
+
+      for (let i = 0; i < ds.groups.length; i++) {
+        const g = ds.groups[i];
+        const isLatest = i === 0;
+        const pendingCount = g.pieces.filter((p) => p.pendingRemoval).length;
+        const allPending = pendingCount === g.totalPieces;
+        let tag: string;
+        if (allPending) {
+          tag = `${c.dim}${center("removing", statusW)}${c.reset}`;
+        } else if (pendingCount > 0) {
+          const activeCount = g.totalPieces - pendingCount;
+          tag = isLatest
+            ? `${c.green}${center("latest", statusW)}${c.reset}`
+            : `${c.yellow}${center("old", statusW)}${c.reset}`;
+          // Show pending count in Pcs column
+        } else {
+          tag = isLatest ? `${c.green}${center("latest", statusW)}${c.reset}` : `${c.yellow}${center("old", statusW)}${c.reset}`;
+        }
+        const pcsStr = String(g.totalPieces);
+        const sizeStr = formatSize(g.totalSizeBytes);
+        totalSize += g.totalSizeBytes;
+        const cidLink = `\x1b]8;;https://${g.ipfsRootCID}.ipfs.dweb.link\x07${center(g.ipfsRootCID, cidW)}\x1b]8;;\x07`;
+        console.log(`  ${c.bold}${cidLink}${c.reset}  ${c.dim}${center(pcsStr, pcsW)}${c.reset}  ${c.dim}${center(sizeStr, sizeW)}${c.reset}  ${tag}`);
+      }
+
+      if (ds.orphanPieces.length > 0) {
+        const orphanSize = ds.orphanPieces.reduce((s, p) => s + p.sizeBytes, 0);
+        totalSize += orphanSize;
+        console.log(`  ${c.dim}${center("(no IPFS root CID)", cidW)}  ${center(String(ds.orphanPieces.length), pcsW)}  ${center(formatSize(orphanSize), sizeW)}${c.reset}  ${c.yellow}${center("orphan", statusW)}${c.reset}`);
+      }
+
+      // Totals row
+      console.log(`  ${c.dim}${"─".repeat(cidW)}  ${"─".repeat(pcsW)}  ${"─".repeat(sizeW)}  ${"─".repeat(statusW)}${c.reset}`);
+      console.log(`  ${center("Total", cidW)}  ${c.bold}${center(String(Number(ds.activePieceCount)), pcsW)}${c.reset}  ${c.bold}${center(formatSize(totalSize), sizeW)}${c.reset}`);
+
+      console.log("");
+
+      if (ds.pendingRemovalCount > 0) {
+        console.log(`  ${c.dim}${ds.pendingRemovalCount} piece(s) pending removal — removals are processed by the provider on a schedule${c.reset}`);
+        console.log("");
+      }
+
+      // Summary — count old pieces + duplicate uploads, excluding pending
+      const activePieces = (p: PieceInfo) => !p.pendingRemoval;
+      const oldPieces = ds.groups.slice(1).reduce((sum, g) => sum + g.pieces.filter(activePieces).length, 0)
+        + ds.orphanPieces.filter(activePieces).length;
+      const duplicates = ds.groups.reduce((sum, g) => {
+        const active = g.pieces.filter(activePieces).length;
+        return sum + Math.max(0, active - 1);
+      }, 0);
+      const removable = oldPieces + duplicates;
+      if (removable > 0) {
+        const oldSize = ds.groups.slice(1).reduce((s, g) =>
+          s + g.pieces.filter(activePieces).reduce((ss, p) => ss + p.sizeBytes, 0), 0)
+          + ds.orphanPieces.filter(activePieces).reduce((s, p) => s + p.sizeBytes, 0);
+        const dupSize = ds.groups.reduce((s, g) => {
+          const active = g.pieces.filter(activePieces);
+          if (active.length <= 1) return s;
+          const perPiece = active.reduce((ss, p) => ss + p.sizeBytes, 0) / active.length;
+          return s + perPiece * (active.length - 1);
+        }, 0);
+        const savingStr = formatSize(oldSize + dupSize);
+        if (oldPieces > 0 && duplicates > 0) {
+          console.log(`  ${c.yellow}${oldPieces} old piece(s) + ${duplicates} duplicate upload(s) (${savingStr}) can be cleaned up${c.reset}`);
+        } else if (duplicates > 0) {
+          console.log(`  ${c.yellow}${duplicates} duplicate upload(s) (${savingStr}) can be cleaned up${c.reset}`);
+        } else {
+          console.log(`  ${c.yellow}${oldPieces} old piece(s) (${savingStr}) can be cleaned up${c.reset}`);
+        }
+        info(`  Run: nova manage clean${!mainnet ? " --calibration" : ""}`);
+        console.log("");
+      }
+    }
+  } else if (subcommand === "clean") {
+    const reallyDoIt = values["really-do-it"]!;
+
+    let dataSetId: bigint | undefined;
+    if (values["dataset-id"] !== undefined) {
+      const n = Number(values["dataset-id"]);
+      if (isNaN(n)) {
+        fail(`Invalid dataset ID: ${values["dataset-id"]}`);
+        earlyExit(1, `Invalid dataset ID: ${values["dataset-id"]}`);
+      }
+      dataSetId = BigInt(n);
+    }
+
+    info(`Scanning ${mainnet ? "mainnet" : "calibration"}...`);
+    console.log("");
+
+    const summaries = await listPieces({ pinKey: config.pinKey, mainnet });
+    if (summaries.length === 0) {
+      info("No datasets found for this wallet.");
+      return;
+    }
+
+    let target = summaries[0];
+    if (dataSetId !== undefined) {
+      const found = summaries.find((s) => s.dataSetId === dataSetId);
+      if (!found) {
+        fail(`Dataset ${dataSetId} not found.`);
+        earlyExit(1, `Dataset ${dataSetId} not found.`);
+      }
+      target = found;
+    } else if (summaries.length > 1) {
+      fail(`Multiple datasets found. Specify one with --dataset-id.`);
+      info(`IDs: ${summaries.map((s) => s.dataSetId).join(", ")}`);
+      earlyExit(1, "Multiple datasets found.");
+    }
+
+    // Parse comma-separated CID lists
+    const removeCids = values.remove ? values.remove.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    const keepCids = values.keep ? values.keep.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    const hasRemoveFlag = removeCids.length > 0;
+    const hasKeepFlag = keepCids.length > 0;
+
+    // Validate --keep and --remove are not used together
+    if (hasKeepFlag && hasRemoveFlag) {
+      fail("Cannot use --keep and --remove together.");
+      info("Use --keep to keep specific CIDs and remove everything else,");
+      info("or --remove to remove specific CIDs.");
+      earlyExit(1, "Cannot use --keep and --remove together.");
+    }
+
+    const keepCopies = values["keep-copies"]!;
+
+    // Helper: count active (non-pending) pieces in a group
+    const activeCount = (g: { pieces: PieceInfo[] }) =>
+      g.pieces.filter((p) => !p.pendingRemoval).length;
+
+    // Determine what will be kept and removed (only counting active pieces)
+    const keptCids: string[] = [];
+    let piecesToRemove = 0;
+    let duplicatesToRemove = 0;
+    const removedGroups: { cid: string; pieces: number }[] = [];
+
+    if (hasRemoveFlag) {
+      for (const cid of removeCids) {
+        if (!target.groups.find((g) => g.ipfsRootCID === cid)) {
+          fail(`CID not found in dataset: ${cid}`);
+          earlyExit(1, `CID not found: ${cid}`);
+        }
+      }
+      const removeSet = new Set(removeCids);
+      for (const g of target.groups) {
+        if (removeSet.has(g.ipfsRootCID)) {
+          const active = activeCount(g);
+          if (active > 0) {
+            piecesToRemove += active;
+            removedGroups.push({ cid: g.ipfsRootCID, pieces: active });
+          }
+        } else {
+          keptCids.push(g.ipfsRootCID);
+        }
+      }
+    } else {
+      // Keep mode: keep specified CIDs (or latest), remove everything else
+      const keepSet = hasKeepFlag
+        ? new Set(keepCids)
+        : new Set([target.groups[0]?.ipfsRootCID].filter(Boolean));
+
+      if (keepSet.size === 0) {
+        info("No piece groups found to clean.");
+        return;
+      }
+
+      // Validate all keep CIDs exist
+      for (const cid of keepSet) {
+        if (!target.groups.find((g) => g.ipfsRootCID === cid)) {
+          fail(`CID not found in dataset: ${cid}`);
+          earlyExit(1, `CID not found: ${cid}`);
+        }
+      }
+
+      for (const g of target.groups) {
+        if (keepSet.has(g.ipfsRootCID)) {
+          keptCids.push(g.ipfsRootCID);
+          // Dedup within kept groups (only active pieces)
+          const active = activeCount(g);
+          if (!keepCopies && active > 1) {
+            duplicatesToRemove += active - 1;
+          }
+        } else {
+          const active = activeCount(g);
+          if (active > 0) {
+            piecesToRemove += active;
+            removedGroups.push({ cid: g.ipfsRootCID, pieces: active });
+          }
+        }
+      }
+      const activeOrphans = target.orphanPieces.filter((p) => !p.pendingRemoval).length;
+      piecesToRemove += activeOrphans;
+    }
+
+    const totalToRemove = piecesToRemove + duplicatesToRemove;
+
+    if (totalToRemove === 0) {
+      if (jsonMode) {
+        unmuteConsole();
+        console.log(JSON.stringify({ removed: 0 }));
+      } else {
+        success("Nothing to clean.");
+      }
+      return;
+    }
+
+    // Show the plan
+    console.log(`  ${c.cyan}${c.bold}Clean Plan${c.reset} ${c.dim}(Dataset ${target.dataSetId})${c.reset}`);
+    console.log("");
+    if (!hasRemoveFlag) {
+      for (const cid of keptCids) {
+        label("Keep", `${cid} (1 piece)`);
+      }
+      console.log("");
+    }
+    if (removedGroups.length > 0) {
+      for (const g of removedGroups) {
+        labelDim("Delete", `${g.cid} (${g.pieces} piece${g.pieces > 1 ? "s" : ""})`);
+      }
+    }
+    const activeOrphanCount = target.orphanPieces.filter((p) => !p.pendingRemoval).length;
+    if (activeOrphanCount > 0 && !hasRemoveFlag) {
+      labelDim("Delete", `${activeOrphanCount} orphan piece(s) (no IPFS root CID)`);
+    }
+    // Show duplicates per kept CID (only for default clean / --keep, not --remove)
+    if (!keepCopies && !hasRemoveFlag) {
+      for (const cid of keptCids) {
+        const g = target.groups.find((g) => g.ipfsRootCID === cid);
+        if (g) {
+          const active = activeCount(g);
+          if (active > 1) {
+            labelDim("Delete", `${active - 1} duplicate upload(s) of ${cid}`);
+          }
+        }
+      }
+    }
+    console.log("");
+    label("Total", `${totalToRemove} piece(s) will be permanently deleted`);
+    console.log("");
+
+    if (!reallyDoIt) {
+      // Dry run — show the plan and exit
+      info("This is a preview. No pieces were deleted.");
+      console.log("");
+      if (hasRemoveFlag) {
+        info(`To execute: nova manage clean --remove ${values.remove} --really-do-it${!mainnet ? " --calibration" : ""}`);
+      } else if (values.keep) {
+        info(`To execute: nova manage clean --keep ${values.keep} --really-do-it${!mainnet ? " --calibration" : ""}`);
+      } else {
+        info(`To execute: nova manage clean --really-do-it${!mainnet ? " --calibration" : ""}`);
+      }
+      console.log("");
+      earlyExit(0);
+    }
+
+    // In non-TTY mode (CI), --really-do-it is sufficient
+    // In TTY mode, also require interactive confirmation
+    if (process.stdin.isTTY && !jsonMode) {
+      const { ask: askPrompt, close: closePrompt } = await import("./prompt.js");
+      const confirm = await askPrompt(promptLabel(`Permanently delete ${totalToRemove} piece(s)? Type 'yes' to confirm:`));
+      closePrompt();
+      if (confirm !== "yes") {
+        info("Clean cancelled.");
+        earlyExit(0);
+      }
+    }
+
+    info(`Removing ${totalToRemove} piece(s) — each requires a separate transaction, this may take a while...`);
+    const result = await cleanPieces({
+      pinKey: config.pinKey,
+      mainnet,
+      keepCids: hasKeepFlag ? keepCids : undefined,
+      removeCids: hasRemoveFlag ? removeCids : undefined,
+      dataSetId,
+      keepCopies,
+      onProgress: (done, total) => {
+        if (process.stderr.isTTY) {
+          process.stderr.write(`\r  ${c.dim}${done}/${total}${c.reset}`);
+          if (done === total) process.stderr.write("\r" + " ".repeat(20) + "\r");
+        }
+      },
+    });
+
+    if (jsonMode) {
+      unmuteConsole();
+      console.log(jsonStringify(result));
+    } else {
+      console.log("");
+      if (result.failed > 0) {
+        console.log(`  ${c.yellow}Partially completed: ${result.removed} of ${result.removed + result.failed} piece(s) removed${c.reset}`);
+        fail(`Error: ${result.error}`);
+        info("The pieces already removed are scheduled for deletion.");
+        info("Run 'nova manage clean' again to retry the remaining pieces.");
+      } else {
+        success(`Removed ${result.removed} piece(s)`);
+      }
+      for (const cid of result.keptCids) {
+        label("Kept", cid);
+      }
+      if (result.txHashes.length > 0) {
+        labelDim("TXs", result.txHashes.length.toString());
+      }
+      console.log("");
+      info("Removals take at least 30 seconds to appear in 'nova manage'.");
+      info("Pieces will show as 'removing' until the provider fully processes them.");
+      console.log("");
+    }
+  } else {
+    fail(`Unknown manage subcommand: ${subcommand}`);
+    info("Use: nova manage | nova manage clean");
+    earlyExit(1, `Unknown manage subcommand: ${subcommand}`);
+  }
+}
+
 async function runConfig() {
   if (!process.stdin.isTTY) {
     fail("'nova config' requires an interactive terminal.");
@@ -555,6 +1017,9 @@ async function main() {
       break;
     case "status":
       await runStatus(args);
+      break;
+    case "manage":
+      await runManage(args);
       break;
     case "config":
       await runConfig();
