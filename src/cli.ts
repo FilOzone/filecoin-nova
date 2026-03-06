@@ -467,7 +467,8 @@ async function runConfig() {
   console.log(`  ${c.cyan}${c.bold}Nova Config${c.reset}`);
   console.log(`  ${c.dim}Credentials stored in ${credentialsPath()}${c.reset}`);
   console.log("");
-  info("Press Enter to keep current value. Enter 'clear' to remove.");
+  info("Only the Filecoin wallet key is needed to deploy. The rest are optional.");
+  info("Press Enter to skip or keep current value. Enter 'clear' to remove.");
   console.log("");
 
   const pinKey = await ask(promptLabel(`Filecoin wallet key${creds.pinKey ? ` [${c.dim}configured${c.reset}]` : ""}:`));
