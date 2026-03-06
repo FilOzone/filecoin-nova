@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -42,13 +42,6 @@ export function writeCredentials(creds: Credentials): void {
   writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2) + "\n", {
     mode: 0o600,
   });
-}
-
-/**
- * Check if the credentials file exists.
- */
-export function credentialsExist(): boolean {
-  return existsSync(CREDENTIALS_FILE);
 }
 
 /**

@@ -307,6 +307,10 @@ async function runStatus(args: string[]) {
   let ensName = values.ens || config.ensName;
 
   if (!ensName) {
+    if (!process.stdin.isTTY) {
+      fail("--ens flag or NOVA_ENS_NAME env var required.");
+      earlyExit(1, "--ens flag or NOVA_ENS_NAME env var required.");
+    }
     const input = await ask(promptLabel("ENS domain to check:"));
     if (!input) {
       fail("ENS domain required.");

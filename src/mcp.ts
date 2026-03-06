@@ -41,7 +41,7 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.2.11" },
+  { name: "filecoin-nova", version: "0.2.12" },
 );
 
 // nova_deploy — Deploy a directory to Filecoin Onchain Cloud
@@ -62,8 +62,6 @@ server.registerTool(
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
       ensName: z.string().optional().describe("ENS domain to point to the site (e.g. mysite.eth)"),
-      ensKey: z.string().optional().describe("Ethereum wallet private key for ENS updates (needs ETH for gas)"),
-      pinKey: z.string().optional().describe("Filecoin wallet private key (needs USDFC). Falls back to NOVA_PIN_KEY env var"),
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
       providerId: z.number().optional().describe("Storage provider ID"),
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
@@ -74,21 +72,18 @@ server.registerTool(
       try {
         const config = resolveConfig(process.env);
 
-        const pinKey = params.pinKey || config.pinKey;
-        if (!pinKey) {
+        if (!config.pinKey) {
           return {
             isError: true,
             content: [{ type: "text" as const, text: "No Filecoin wallet key found. The user needs to run 'nova config' to save their keys, or set the NOVA_PIN_KEY environment variable." }],
           };
         }
 
-        process.env.NOVA_PIN_KEY = pinKey;
-
         const result = await deploy({
           path: params.path,
-          pinKey,
+          pinKey: config.pinKey,
           ensName: params.ensName,
-          ensKey: params.ensKey || config.ensKey,
+          ensKey: config.ensKey,
           rpcUrl: params.rpcUrl || config.rpcUrl,
           providerId: params.providerId ?? config.providerId,
           mainnet: !params.calibration,
@@ -130,7 +125,6 @@ server.registerTool(
     inputSchema: z.object({
       cid: z.string().describe("IPFS CID to point the ENS domain to"),
       ensName: z.string().describe("ENS domain (e.g. mysite.eth)"),
-      ensKey: z.string().optional().describe("Ethereum wallet private key. Falls back to NOVA_ENS_KEY env var"),
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
     }),
   },
@@ -138,7 +132,7 @@ server.registerTool(
     return redirectConsole(async () => {
       try {
         const config = resolveConfig(process.env);
-        const ensKey = params.ensKey || config.ensKey;
+        const ensKey = config.ensKey;
 
         if (!ensKey) {
           return {

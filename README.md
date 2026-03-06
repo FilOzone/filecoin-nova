@@ -168,6 +168,7 @@ import { deploy } from "filecoin-nova";
 
 const result = await deploy({
   path: "./public",
+  pinKey: process.env.NOVA_PIN_KEY,
   ensName: "mysite.eth",
   ensKey: process.env.NOVA_ENS_KEY,
 });

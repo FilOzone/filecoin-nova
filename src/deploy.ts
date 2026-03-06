@@ -95,8 +95,8 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
 
   if (config.ensName && !config.ensKey) {
     throw new Error(
-      "NOVA_ENS_KEY env var required to point your ENS domain to your website.\n\n" +
-        "  export NOVA_ENS_KEY=your-ethereum-wallet-private-key"
+      "Ethereum wallet key required for ENS updates.\n\n" +
+        "  Run 'nova config' to save your keys, or set NOVA_ENS_KEY env var."
     );
   }
 
