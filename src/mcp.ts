@@ -47,10 +47,10 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.3.2" },
+  { name: "filecoin-nova", version: "0.3.4" },
 );
 
-// nova_deploy — Deploy a directory to Filecoin Onchain Cloud
+// nova_deploy - Deploy a directory to Filecoin Onchain Cloud
 server.registerTool(
   "nova_deploy",
   {
@@ -59,7 +59,7 @@ server.registerTool(
       "Deploy a static website directory to Filecoin Onchain Cloud. " +
       "Optionally update an ENS domain to point to the deployed site. " +
       "Returns the IPFS CID and gateway URL. " +
-      "This tool takes about 60 seconds to complete — do not retry if it seems slow. " +
+      "This tool takes about 60 seconds to complete - do not retry if it seems slow. " +
       "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
       "Keys cannot be passed as parameters and must NEVER be requested in chat. " +
       "Before calling, ask the user if they have run 'nova config' to save their Filecoin wallet key. " +
@@ -70,6 +70,7 @@ server.registerTool(
       ensName: z.string().optional().describe("ENS domain to point to the site (e.g. mysite.eth)"),
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
       providerId: z.number().optional().describe("Storage provider ID"),
+      clean: z.boolean().optional().describe("After deploying, remove ALL other pieces - only the new deploy is kept. This is destructive and cannot be undone."),
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
   },
@@ -95,7 +96,7 @@ server.registerTool(
           mainnet: !params.calibration,
         });
 
-        const output = {
+        const output: Record<string, unknown> = {
           cid: result.cid,
           directory: result.directory,
           gatewayUrl: `https://${result.cid}.ipfs.dweb.link`,
@@ -103,6 +104,24 @@ server.registerTool(
           ...(result.txHash && { txHash: result.txHash }),
           ...(result.ethLimoUrl && { ethLimoUrl: result.ethLimoUrl }),
         };
+
+        // Post-deploy cleanup
+        if (params.clean) {
+          try {
+            const cleanResult = await cleanPieces({
+              pinKey: config.pinKey,
+              mainnet: !params.calibration,
+              keepCids: [result.cid],
+            });
+            output.cleaned = {
+              removed: cleanResult.removed,
+              failed: cleanResult.failed,
+              keptCids: cleanResult.keptCids,
+            };
+          } catch (err: any) {
+            output.cleanError = err.message;
+          }
+        }
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
@@ -117,7 +136,7 @@ server.registerTool(
   }
 );
 
-// nova_ens — Point an ENS domain to an IPFS CID
+// nova_ens - Point an ENS domain to an IPFS CID
 server.registerTool(
   "nova_ens",
   {
@@ -185,15 +204,16 @@ server.registerTool(
   }
 );
 
-// nova_status — Check ENS contenthash
+// nova_status - Check ENS contenthash
 server.registerTool(
   "nova_status",
   {
     title: "Check ENS Status",
     description:
       "Check the current ENS contenthash for a domain. " +
-      "Returns the contenthash and eth.limo URL if set. " +
-      "No credentials needed for this read-only check.",
+      "Returns the contenthash, eth.limo URL, and pin status if credentials are available. " +
+      "Pin status shows how many active/removing pieces back this CID. " +
+      "No credentials needed for the ENS check, but pin status requires 'nova config'.",
     inputSchema: z.object({
       ensName: z.string().describe("ENS domain to check (e.g. mysite.eth)"),
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
@@ -215,13 +235,41 @@ server.registerTool(
           params.rpcUrl || config.rpcUrl
         );
 
-        const output = {
+        const cid = contenthash?.startsWith("ipfs://") ? contenthash.slice(7) : null;
+
+        const output: Record<string, unknown> = {
           ensName: params.ensName,
           contenthash: contenthash || null,
           url: contenthash
             ? `https://${params.ensName.replace(/\.eth$/, "")}.eth.limo`
             : null,
+          ...(cid && { cid }),
         };
+
+        // Add pin status if credentials are available
+        if (cid && config.pinKey) {
+          try {
+            const summaries = await listPieces({ pinKey: config.pinKey, mainnet: true });
+            for (const ds of summaries) {
+              const group = ds.groups.find((g) => g.ipfsRootCID === cid);
+              if (group) {
+                const pending = group.pieces.filter((p) => p.pendingRemoval).length;
+                output.pinStatus = {
+                  totalPieces: group.totalPieces,
+                  activePieces: group.totalPieces - pending,
+                  pendingRemoval: pending,
+                };
+                break;
+              }
+            }
+            if (!output.pinStatus) {
+              output.pinStatus = null;
+              output.pinNote = "CID not found in any pinned datasets for this wallet";
+            }
+          } catch {
+            // Silently skip
+          }
+        }
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
@@ -236,7 +284,7 @@ server.registerTool(
   }
 );
 
-// nova_manage — List pinned pieces grouped by IPFS CID
+// nova_manage - List pinned pieces grouped by IPFS CID
 server.registerTool(
   "nova_manage",
   {
@@ -244,7 +292,7 @@ server.registerTool(
     description:
       "List all pinned pieces for this wallet, grouped by IPFS root CID. " +
       "Shows piece counts, sizes, and identifies old/duplicate uploads that can be cleaned up. " +
-      "Each group has 'activePieces' (not pending removal) and 'duplicateActivePieces' (active copies beyond the first — these are redundant and can be removed with nova_manage_clean). " +
+      "Each group has 'activePieces' (not pending removal) and 'duplicateActivePieces' (active copies beyond the first - these are redundant and can be removed with nova_manage_clean). " +
       "Only 1 active piece per CID is needed. If duplicateActivePieces > 0, suggest cleanup. " +
       "Pieces with pendingRemoval=true are already scheduled for deletion. " +
       "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
@@ -283,7 +331,7 @@ server.registerTool(
   }
 );
 
-// nova_manage_clean — Remove old and duplicate pieces
+// nova_manage_clean - Remove old and duplicate pieces
 server.registerTool(
   "nova_manage_clean",
   {
@@ -294,7 +342,7 @@ server.registerTool(
       "including duplicate uploads of the same content. " +
       "Use 'keepCids' to keep specific CIDs, or 'removeCids' to remove specific CIDs. " +
       "WARNING: This permanently deletes pieces. Always run nova_manage first to review. " +
-      "Each piece requires a separate transaction — this may take a while for many pieces. " +
+      "Each piece requires a separate transaction - this may take a while for many pieces. " +
       "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
       "Do NOT call without confirming credentials are set up first. " +
       "ALWAYS confirm with the user before calling this tool.",

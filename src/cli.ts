@@ -44,7 +44,7 @@ function earlyExit(code: number, message?: string): never {
 }
 
 const HELP = `
-  ${c.cyan}${c.bold}Nova${c.reset} ${c.dim}— Deploy static websites to Filecoin Onchain Cloud${c.reset}
+  ${c.cyan}${c.bold}Nova${c.reset} ${c.dim}- Deploy static websites to Filecoin Onchain Cloud${c.reset}
 
   ${c.bold}Usage${c.reset}
 
@@ -69,6 +69,7 @@ const HELP = `
     ${c.dim}--ens <name>${c.reset}          ENS domain (e.g. desite.ezpdpz.eth)
     ${c.dim}--rpc-url <url>${c.reset}       Ethereum RPC URL
     ${c.dim}--provider-id <id>${c.reset}    Storage provider ID
+    ${c.dim}--clean${c.reset}               After deploying, remove ALL other pieces (only the new deploy is kept)
     ${c.dim}--calibration${c.reset}         Use calibration testnet (default: mainnet)
     ${c.dim}--json${c.reset}                Output result as JSON (for CI/scripts)
 
@@ -81,6 +82,7 @@ const HELP = `
     ${c.dim}$${c.reset} nova deploy ./public --ens desite.ezpdpz.eth
     ${c.dim}$${c.reset} nova deploy site.zip
     ${c.dim}$${c.reset} nova deploy ./dist --json
+    ${c.dim}$${c.reset} nova deploy ./dist --clean          ${c.dim}# Deploy and remove ALL old pieces${c.reset}
     ${c.dim}$${c.reset} nova ens bafybei... --ens mysite.eth
     ${c.dim}$${c.reset} nova status --ens mysite.eth --json
     ${c.dim}$${c.reset} nova manage
@@ -144,6 +146,7 @@ async function runDeploy(args: string[]) {
       ens: { type: "string" },
       "rpc-url": { type: "string" },
       "provider-id": { type: "string" },
+      clean: { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
@@ -151,6 +154,7 @@ async function runDeploy(args: string[]) {
   });
 
   const jsonMode = values.json!;
+  const cleanAfterDeploy = values.clean!;
   if (jsonMode) muteConsole();
 
   banner();
@@ -245,7 +249,7 @@ async function runDeploy(args: string[]) {
   const isMainnet = !values.calibration;
   console.log("");
   label("Path", resolved);
-  label("Size", `${size} ${unit} — ~${costStr} USDFC/month`);
+  label("Size", `${size} ${unit} - ~${costStr} USDFC/month`);
   if (ensName) label("ENS", ensName);
   label("Net", isMainnet ? "mainnet" : "calibration");
 
@@ -281,6 +285,41 @@ async function runDeploy(args: string[]) {
     mainnet: isMainnet,
   });
 
+  // Post-deploy cleanup
+  let cleanedResult: { removed: number; failed: number; keptCids: string[]; error?: string } | undefined;
+  if (cleanAfterDeploy && config.pinKey) {
+    if (!jsonMode) {
+      console.log("");
+      info("Cleaning up old pieces...");
+    }
+
+    try {
+      const cleanResult = await cleanPieces({
+        pinKey: config.pinKey,
+        mainnet: isMainnet,
+        keepCids: [result.cid],
+      });
+
+      cleanedResult = { removed: cleanResult.removed, failed: cleanResult.failed, keptCids: cleanResult.keptCids, error: cleanResult.error };
+
+      if (!jsonMode) {
+        if (cleanResult.removed > 0) {
+          success(`Removed ${cleanResult.removed} old piece(s)`);
+          if (cleanResult.failed > 0) {
+            info(`${cleanResult.failed} piece(s) failed - run 'nova manage clean' to retry`);
+          }
+        } else {
+          info("No old pieces to clean up.");
+        }
+      }
+    } catch (err: any) {
+      if (!jsonMode) {
+        info(`Cleanup skipped: ${err.message}`);
+      }
+      cleanedResult = { removed: 0, failed: 0, keptCids: [], error: err.message };
+    }
+  }
+
   if (jsonMode) {
     unmuteConsole();
     console.log(JSON.stringify({
@@ -290,6 +329,7 @@ async function runDeploy(args: string[]) {
       ...(result.ensName && { ensName: result.ensName }),
       ...(result.txHash && { txHash: result.txHash }),
       ...(result.ethLimoUrl && { ethLimoUrl: result.ethLimoUrl }),
+      ...(cleanedResult && { cleaned: cleanedResult }),
     }));
   }
 }
@@ -340,12 +380,39 @@ async function runStatus(args: string[]) {
   info(`Checking ${ensName}...`);
   const contenthash = await getEnsContenthash(ensName, rpcUrl);
 
+  // Extract CID from contenthash (format: "ipfs://bafybei...")
+  const cid = contenthash?.startsWith("ipfs://") ? contenthash.slice(7) : null;
+
+  // Check pin status if we have credentials and a CID
+  let pinStatus: { totalPieces: number; activePieces: number; pendingRemoval: number } | null = null;
+  if (cid && config.pinKey) {
+    try {
+      const summaries = await listPieces({ pinKey: config.pinKey, mainnet: true });
+      for (const ds of summaries) {
+        const group = ds.groups.find((g) => g.ipfsRootCID === cid);
+        if (group) {
+          const pending = group.pieces.filter((p) => p.pendingRemoval).length;
+          pinStatus = {
+            totalPieces: group.totalPieces,
+            activePieces: group.totalPieces - pending,
+            pendingRemoval: pending,
+          };
+          break;
+        }
+      }
+    } catch {
+      // Silently skip — pin status is supplementary
+    }
+  }
+
   if (jsonMode) {
     unmuteConsole();
     console.log(JSON.stringify({
       ensName,
       contenthash: contenthash || null,
       url: contenthash ? `https://${ensName.replace(/\.eth$/, "")}.eth.limo` : null,
+      ...(cid && { cid }),
+      ...(pinStatus && { pinStatus }),
     }));
   } else {
     console.log("");
@@ -353,6 +420,11 @@ async function runStatus(args: string[]) {
       label("ENS", ensName);
       label("Hash", contenthash);
       label("URL", `https://${ensName.replace(/\.eth$/, "")}.eth.limo`);
+      if (pinStatus) {
+        const parts = [`${pinStatus.activePieces} active`];
+        if (pinStatus.pendingRemoval > 0) parts.push(`${pinStatus.pendingRemoval} removing`);
+        label("Pins", parts.join(", "));
+      }
     } else {
       info(`No contenthash set for ${ensName}`);
     }
@@ -478,7 +550,7 @@ async function runEns(args: string[]) {
 async function runManage(args: string[]) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`
-  ${c.cyan}${c.bold}Nova Manage${c.reset} ${c.dim}— Manage pinned pieces and storage costs${c.reset}
+  ${c.cyan}${c.bold}Nova Manage${c.reset} ${c.dim}- Manage pinned pieces and storage costs${c.reset}
 
   ${c.bold}Usage${c.reset}
 
@@ -488,7 +560,7 @@ async function runManage(args: string[]) {
 
   ${c.bold}Options (clean)${c.reset}
 
-    ${c.dim}--really-do-it${c.reset}        Required — confirms you want to delete pieces
+    ${c.dim}--really-do-it${c.reset}        Required - confirms you want to delete pieces
     ${c.dim}--keep <cid,...>${c.reset}      Keep these CIDs, remove everything else
                          ${c.dim}(default: keep the latest CID only)${c.reset}
     ${c.dim}--remove <cid,...>${c.reset}    Remove only these CIDs, keep everything else
@@ -624,11 +696,9 @@ async function runManage(args: string[]) {
         if (allPending) {
           tag = `${c.dim}${center("removing", statusW)}${c.reset}`;
         } else if (pendingCount > 0) {
-          const activeCount = g.totalPieces - pendingCount;
           tag = isLatest
             ? `${c.green}${center("latest", statusW)}${c.reset}`
             : `${c.yellow}${center("old", statusW)}${c.reset}`;
-          // Show pending count in Pcs column
         } else {
           tag = isLatest ? `${c.green}${center("latest", statusW)}${c.reset}` : `${c.yellow}${center("old", statusW)}${c.reset}`;
         }
@@ -652,7 +722,7 @@ async function runManage(args: string[]) {
       console.log("");
 
       if (ds.pendingRemovalCount > 0) {
-        console.log(`  ${c.dim}${ds.pendingRemovalCount} piece(s) pending removal — removals are processed by the provider on a schedule${c.reset}`);
+        console.log(`  ${c.dim}${ds.pendingRemovalCount} piece(s) pending removal - removals are processed by the provider on a schedule${c.reset}`);
         console.log("");
       }
 
@@ -880,7 +950,7 @@ async function runManage(args: string[]) {
       }
     }
 
-    info(`Removing ${totalToRemove} piece(s) — each requires a separate transaction, this may take a while...`);
+    info(`Removing ${totalToRemove} piece(s) - each requires a separate transaction, this may take a while...`);
     const result = await cleanPieces({
       pinKey: config.pinKey,
       mainnet,
