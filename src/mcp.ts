@@ -41,7 +41,7 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.2.10" },
+  { name: "filecoin-nova", version: "0.2.11" },
 );
 
 // nova_deploy — Deploy a directory to Filecoin Onchain Cloud

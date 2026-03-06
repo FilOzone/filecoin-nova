@@ -263,6 +263,7 @@ async function runDeploy(args: string[]) {
 
   const result = await deploy({
     path: directory,
+    pinKey: config.pinKey,
     ensName,
     ensKey: config.ensKey,
     rpcUrl: values["rpc-url"] || config.rpcUrl,
