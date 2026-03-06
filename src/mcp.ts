@@ -113,7 +113,7 @@ server.registerTool(
         if (!ensKey) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "Ethereum wallet key required. Set NOVA_ENS_KEY env var or pass ensKey parameter." }],
+            content: [{ type: "text" as const, text: "Ethereum wallet key required. Run 'nova config' to save your keys, or set NOVA_ENS_KEY env var." }],
           };
         }
 

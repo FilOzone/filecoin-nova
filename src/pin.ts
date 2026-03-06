@@ -216,7 +216,7 @@ export async function setupFilecoinPinPayments(
   if (!env.PRIVATE_KEY) {
     throw new Error(
       "No Filecoin wallet key configured.\n\n" +
-        "  Set NOVA_PIN_KEY env var with your Filecoin wallet private key."
+        "  Run 'nova config' to save your keys, or set NOVA_PIN_KEY env var."
     );
   }
 
@@ -325,7 +325,7 @@ export async function pinToFoc(config: PinConfig): Promise<PinResult> {
   if (!env.PRIVATE_KEY) {
     throw new Error(
       "No Filecoin wallet key configured.\n\n" +
-        "  Set NOVA_PIN_KEY env var with your Filecoin wallet private key."
+        "  Run 'nova config' to save your keys, or set NOVA_PIN_KEY env var."
     );
   }
 
