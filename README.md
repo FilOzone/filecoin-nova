@@ -36,6 +36,17 @@ Then ask Claude to deploy your site.
 
 ---
 
+## What You Need
+
+| What | Why | Get started |
+|------|-----|-------------|
+| [Node.js](https://nodejs.org/) 20.10+ | Runs Nova | Download from [nodejs.org](https://nodejs.org/) |
+| A wallet with FIL and USDFC | FIL for gas, USDFC for storage | [Set up MetaMask for Filecoin](https://docs.filecoin.io/basics/assets/metamask-setup), then [swap for USDFC](https://www.sushi.com/filecoin/swap?token0=0x80b98d3aa09ffff255c3ba4a241111ff1262f045&token1=NATIVE) |
+| A wallet with ETH *(optional)* | Pays gas for ENS updates | Same MetaMask wallet works |
+| An ENS domain *(optional)* | Human-readable name for your site | Register at [app.ens.domains](https://app.ens.domains) |
+
+---
+
 ## MCP Server
 
 Nova includes an MCP server so your AI editor can deploy and manage sites for you. Save your wallet keys with `nova config`, then add the server to your editor.
@@ -163,17 +174,6 @@ Cleanup is safe by default - `nova manage clean` only shows a plan without delet
 | `--remove <cid,...>` | manage clean | Remove specific CIDs only |
 | `--keep-copies` | manage clean | Keep duplicate uploads of the same content |
 | `--dataset-id <id>` | manage | Target a specific dataset (if wallet has multiple) |
-
----
-
-## What You Need
-
-| What | Why | Get started |
-|------|-----|-------------|
-| [Node.js](https://nodejs.org/) 20.10+ | Runs Nova | Download from [nodejs.org](https://nodejs.org/) |
-| A wallet with FIL and USDFC | FIL for gas, USDFC for storage | [Set up MetaMask for Filecoin](https://docs.filecoin.io/basics/assets/metamask-setup), then [swap for USDFC](https://www.sushi.com/filecoin/swap?token0=0x80b98d3aa09ffff255c3ba4a241111ff1262f045&token1=NATIVE) |
-| A wallet with ETH *(optional)* | Pays gas for ENS updates | Same MetaMask wallet works |
-| An ENS domain *(optional)* | Human-readable name for your site | Register at [app.ens.domains](https://app.ens.domains) |
 
 ---
 
