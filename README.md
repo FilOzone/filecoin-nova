@@ -2,9 +2,9 @@
 
 Put your website on [Filecoin Onchain Cloud](https://filecoin.cloud) in one command. Optionally give it an ENS domain so anyone can visit it at `yoursite.eth.limo`.
 
-Your site is stored onchain on the Filecoin network — no traditional hosting, no servers to manage.
+Your site is stored onchain on the Filecoin network - no traditional hosting, no servers to manage.
 
-Use it as a **CLI** (`nova deploy`) or as an **MCP server** (`nova-mcp`) for AI-assisted deploys from Claude Desktop, Cursor, and other MCP clients.
+Use it as a **CLI** (`nova deploy`) or as an **MCP server** for AI-assisted deploys from Claude Desktop, Cursor, and other MCP clients.
 
 ## Install
 
@@ -22,7 +22,7 @@ npm install -g @filoz/filecoin-nova
 
 ## Deploy Your Site
 
-The simplest way — Nova will walk you through everything:
+The simplest way - Nova will walk you through everything:
 
 ```bash
 nova deploy
@@ -88,8 +88,8 @@ All variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `NOVA_PIN_KEY` | Filecoin wallet key — used to pay for storage |
-| `NOVA_ENS_KEY` | Ethereum wallet key — used to update your ENS domain |
+| `NOVA_PIN_KEY` | Filecoin wallet key - pays for storage |
+| `NOVA_ENS_KEY` | Ethereum wallet key - updates your ENS domain |
 | `NOVA_ENS_NAME` | Default ENS domain (so you don't need `--ens` every time) |
 | `NOVA_RPC_URL` | Custom Ethereum RPC (Nova uses public RPCs by default) |
 | `NOVA_PROVIDER_ID` | Specific storage provider ID |
@@ -118,15 +118,33 @@ nova status --ens mysite.eth --json
 
 ## MCP Server
 
-Nova includes an MCP server for AI-assisted deploys from Claude Desktop, Cursor, and other MCP clients.
+Nova includes an MCP server for AI-assisted deploys. No global install needed - just paste the config.
 
-Add to your `claude_desktop_config.json`:
+**Claude Desktop** - add to `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "filecoin-nova": {
-      "command": "nova-mcp",
+      "command": "npx",
+      "args": ["-y", "--package", "@filoz/filecoin-nova", "nova-mcp"],
+      "env": {
+        "NOVA_PIN_KEY": "your-filecoin-wallet-key",
+        "NOVA_ENS_KEY": "your-ethereum-wallet-key"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** - add to `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "filecoin-nova": {
+      "command": "npx",
+      "args": ["-y", "--package", "@filoz/filecoin-nova", "nova-mcp"],
       "env": {
         "NOVA_PIN_KEY": "your-filecoin-wallet-key",
         "NOVA_ENS_KEY": "your-ethereum-wallet-key"
