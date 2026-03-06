@@ -39,7 +39,7 @@ function withMcpLogging<T>(
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.2.6" },
+  { name: "filecoin-nova", version: "0.2.7" },
   { capabilities: { logging: {} } }
 );
 
