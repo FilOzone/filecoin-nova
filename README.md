@@ -1,12 +1,15 @@
 # Filecoin Nova
 
-Deploy websites to [Filecoin Onchain Cloud](https://filecoin.cloud) in one command. Optionally give it an ENS domain so anyone can visit it at `yoursite.eth.limo`.
+Deploy websites to [Filecoin Onchain Cloud](https://filecoin.cloud) in one command. Your site is stored onchain on the Filecoin network — no traditional hosting, no servers to manage.
 
-Your site is stored onchain on the Filecoin network - no traditional hosting, no servers to manage.
+- **One-command deploy** — `nova deploy ./dist` and you're live
+- **ENS integration** — point an ENS domain to your site so anyone can visit `yoursite.eth.limo`
+- **Storage management** — list, inspect, and clean up old deploys to control costs
+- **CI-ready** — `--json` output and env var config for GitHub Actions and other pipelines
+- **MCP server** — deploy and manage storage directly from Claude Code, Claude Desktop, Cursor, Windsurf, or VS Code
+- **Library API** — import `deploy` into your own tools and scripts
 
-**Two ways to deploy:**
-- **CLI** - `nova deploy` from your terminal
-- **MCP server** - deploy directly from Claude Code, Claude Desktop, Cursor, Windsurf, or VS Code
+Storage costs under $0.10/month for a typical website. No servers, no infrastructure, no monthly hosting bills.
 
 ---
 
