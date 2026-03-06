@@ -19,6 +19,8 @@ export interface CIDGroup {
   ipfsRootCID: string;
   pieces: PieceInfo[];
   totalPieces: number;
+  activePieces: number;
+  duplicateActivePieces: number;
   totalSizeBytes: number;
   lowestPieceId: bigint;
   highestPieceId: bigint;
@@ -167,10 +169,13 @@ export async function listPieces(opts: {
     const groups: CIDGroup[] = [];
     for (const [cid, gPieces] of groupMap) {
       const ids = gPieces.map((p) => p.pieceId);
+      const active = gPieces.filter((p) => !p.pendingRemoval).length;
       groups.push({
         ipfsRootCID: cid,
         pieces: gPieces,
         totalPieces: gPieces.length,
+        activePieces: active,
+        duplicateActivePieces: Math.max(0, active - 1),
         totalSizeBytes: gPieces.reduce((sum, p) => sum + p.sizeBytes, 0),
         lowestPieceId: ids.reduce((a, b) => (a < b ? a : b)),
         highestPieceId: ids.reduce((a, b) => (a > b ? a : b)),

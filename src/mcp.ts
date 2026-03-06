@@ -47,7 +47,7 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.3.0" },
+  { name: "filecoin-nova", version: "0.3.1" },
 );
 
 // nova_deploy — Deploy a directory to Filecoin Onchain Cloud
@@ -244,7 +244,9 @@ server.registerTool(
     description:
       "List all pinned pieces for this wallet, grouped by IPFS root CID. " +
       "Shows piece counts, sizes, and identifies old/duplicate uploads that can be cleaned up. " +
-      "Pieces pending removal are marked. " +
+      "Each group has 'activePieces' (not pending removal) and 'duplicateActivePieces' (active copies beyond the first — these are redundant and can be removed with nova_manage_clean). " +
+      "Only 1 active piece per CID is needed. If duplicateActivePieces > 0, suggest cleanup. " +
+      "Pieces with pendingRemoval=true are already scheduled for deletion. " +
       "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
       "Do NOT call without confirming credentials are set up first.",
     inputSchema: z.object({
