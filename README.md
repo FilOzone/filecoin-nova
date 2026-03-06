@@ -9,7 +9,7 @@ Use it as a **CLI** (`nova deploy`) or as an **MCP server** for AI-assisted depl
 ## Install
 
 ```bash
-npm install -g @filoz/filecoin-nova
+npm install -g filecoin-nova
 ```
 
 ## What You Need
@@ -126,12 +126,12 @@ Nova includes an MCP server for AI-assisted deploys. No global install needed.
 claude mcp add filecoin-nova \
   -e NOVA_PIN_KEY=your-filecoin-wallet-key \
   -e NOVA_ENS_KEY=your-ethereum-wallet-key \
-  -- npx -y --package @filoz/filecoin-nova nova-mcp
+  -- npx -y --package filecoin-nova nova-mcp
 ```
 
 ### Claude Desktop
 
-Settings > MCP > Add MCP Server. Set command to `npx`, args to `-y --package @filoz/filecoin-nova nova-mcp`, and add your wallet keys as environment variables.
+Settings > MCP > Add MCP Server. Set command to `npx`, args to `-y --package filecoin-nova nova-mcp`, and add your wallet keys as environment variables.
 
 ### Cursor / Windsurf / VS Code
 
@@ -148,7 +148,7 @@ Add to your MCP config file:
   "mcpServers": {
     "filecoin-nova": {
       "command": "npx",
-      "args": ["-y", "--package", "@filoz/filecoin-nova", "nova-mcp"],
+      "args": ["-y", "--package", "filecoin-nova", "nova-mcp"],
       "env": {
         "NOVA_PIN_KEY": "your-filecoin-wallet-key",
         "NOVA_ENS_KEY": "your-ethereum-wallet-key"
@@ -169,7 +169,7 @@ Add to your MCP config file:
 ## Use as a Library
 
 ```typescript
-import { deploy } from "@filoz/filecoin-nova";
+import { deploy } from "filecoin-nova";
 
 const result = await deploy({
   path: "./public",

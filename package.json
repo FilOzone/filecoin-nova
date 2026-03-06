@@ -1,5 +1,5 @@
 {
-  "name": "@filoz/filecoin-nova",
+  "name": "filecoin-nova",
   "version": "0.1.0",
   "description": "Deploy static sites to Filecoin Onchain Cloud with ENS resolution",
   "type": "module",
