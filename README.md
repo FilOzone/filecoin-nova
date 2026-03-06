@@ -1,10 +1,12 @@
 # Filecoin Nova
 
-Put your website on [Filecoin Onchain Cloud](https://filecoin.cloud) in one command. Optionally give it an ENS domain so anyone can visit it at `yoursite.eth.limo`.
+Deploy websites to [Filecoin Onchain Cloud](https://filecoin.cloud) in one command. Optionally give it an ENS domain so anyone can visit it at `yoursite.eth.limo`.
 
 Your site is stored onchain on the Filecoin network - no traditional hosting, no servers to manage.
 
-Use the **CLI** to deploy from your terminal, or install the **MCP server** to deploy directly from Claude Code, Claude Desktop, Cursor, Windsurf, or VS Code.
+**Two ways to deploy:**
+- **CLI** - `nova deploy` from your terminal
+- **MCP server** - deploy directly from Claude Code, Claude Desktop, Cursor, Windsurf, or VS Code
 
 ---
 
