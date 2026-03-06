@@ -2,21 +2,36 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 import { deploy } from "./deploy.js";
 import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
 import { resolveConfig } from "./config.js";
 
 /**
- * Mute console.log/error during tool execution.
+ * Redirect console.log/error to MCP log notifications during tool execution.
  * MCP servers must only write JSON-RPC to stdout — any stray console output
  * from deploy/ENS/pin functions would corrupt the protocol stream.
+ * Instead, we capture output and send it as MCP log messages.
  */
-function withMutedConsole<T>(fn: () => Promise<T>): Promise<T> {
+function stripAnsi(str: string): string {
+  return str.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function withMcpLogging<T>(
+  log: (level: string, data: string) => Promise<void>,
+  fn: () => Promise<T>
+): Promise<T> {
   const origLog = console.log;
   const origErr = console.error;
-  console.log = () => {};
-  console.error = () => {};
+  console.log = (...args: any[]) => {
+    const msg = stripAnsi(args.map(String).join(" ")).trim();
+    if (msg) log("info", msg).catch(() => {});
+  };
+  console.error = (...args: any[]) => {
+    const msg = stripAnsi(args.map(String).join(" ")).trim();
+    if (msg) log("warning", msg).catch(() => {});
+  };
   return fn().finally(() => {
     console.log = origLog;
     console.error = origErr;
@@ -25,7 +40,7 @@ function withMutedConsole<T>(fn: () => Promise<T>): Promise<T> {
 
 const server = new McpServer({
   name: "filecoin-nova",
-  version: "0.2.5",
+  version: "0.2.6",
 });
 
 // nova_deploy — Deploy a directory to Filecoin Onchain Cloud
@@ -50,8 +65,9 @@ server.registerTool(
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
   },
-  async (params) => {
-    return withMutedConsole(async () => {
+  async (params): Promise<CallToolResult> => {
+    const log = (level: string, data: string) => server.sendLoggingMessage({ level: level as any, data });
+    return withMcpLogging(log, async () => {
       try {
         const config = resolveConfig(process.env);
 
@@ -109,8 +125,9 @@ server.registerTool(
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
     }),
   },
-  async (params) => {
-    return withMutedConsole(async () => {
+  async (params): Promise<CallToolResult> => {
+    const log = (level: string, data: string) => server.sendLoggingMessage({ level: level as any, data });
+    return withMcpLogging(log, async () => {
       try {
         const config = resolveConfig(process.env);
         const ensKey = params.ensKey || config.ensKey;
@@ -172,8 +189,9 @@ server.registerTool(
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
     }),
   },
-  async (params) => {
-    return withMutedConsole(async () => {
+  async (params): Promise<CallToolResult> => {
+    const log = (level: string, data: string) => server.sendLoggingMessage({ level: level as any, data });
+    return withMcpLogging(log, async () => {
       try {
         if (!params.ensName.endsWith(".eth")) {
           return {
