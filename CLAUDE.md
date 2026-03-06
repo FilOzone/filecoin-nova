@@ -19,6 +19,7 @@ nova status           <──   nova_status tool
 - `nova deploy [path]` — Deploy directory or archive (.zip, .tar.gz, .tgz, .tar) to FOC, optionally update ENS
 - `nova ens <cid> --ens <name>` — Point ENS domain to an IPFS CID (no deploy)
 - `nova status --ens <name>` — Check current ENS contenthash
+- `nova config` — Save wallet keys and defaults to credentials file
 
 ## Source Files
 ```
@@ -29,7 +30,7 @@ src/pin.ts       — filecoin-pin subprocess management
 src/archive.ts   — Archive detection and extraction to temp dir
 src/mcp.ts       — MCP server (nova_deploy, nova_ens, nova_status tools)
 src/prompt.ts    — Readline wrapper (lazy init)
-src/config.ts    — Env var resolution
+src/config.ts    — Credentials file (~/.config/filecoin-nova/credentials) + env var resolution
 src/ui.ts        — Visual design system (colours, gutter, labels)
 ```
 
@@ -44,7 +45,9 @@ src/ui.ts        — Visual design system (colours, gutter, labels)
 - ENS contenthash stores IPFS CID in encoded format (EIP-1577)
 - Resolution: `ezpdpz.eth.limo` serves content from IPFS gateway
 - Mainnet ENS — requires mainnet ETH for gas
-- Env vars: `NOVA_ENS_KEY` (ETH wallet), `NOVA_PIN_KEY` (FIL wallet)
+- Config precedence: CLI flags > env vars > credentials file > interactive prompts
+- Credentials file: `~/.config/filecoin-nova/credentials` (mode 600)
+- Env vars: `NOVA_PIN_KEY`, `NOVA_ENS_KEY`, `NOVA_ENS_NAME`, `NOVA_RPC_URL`, `NOVA_PROVIDER_ID`
 
 ## Phases
 1. CLI engine: pin + ENS update + verify + --json ✅
@@ -70,6 +73,12 @@ runs builds, diagnoses gateway/DNS/ENS issues, handles errors intelligently.
 pipelines, or if users consistently struggle with workflows that the CLI
 can't simplify further. Build based on real feedback, not speculation.
 
+## Publishing
+- Package: `filecoin-nova` on npm (unscoped)
+- npm login uses passkey via `npm login --auth-type=web`
+- npm publish must be run directly in terminal (not via Claude Code) for passkey auth
+- Bump version in package.json before publishing
+
 ## Development
 - Language: TypeScript
 - Runtime: Node.js
@@ -85,4 +94,7 @@ can't simplify further. Build based on real feedback, not speculation.
 - ENS updates require mainnet ETH for gas — always confirm before sending tx
 - pnpm commands must run from project dir, not parent ~/claude/
 - Subprocess output may contain ANSI codes — always stripAnsi() before regex parsing
+- Filecoin Onchain Cloud URL is https://filecoin.cloud (NOT filecoin.io)
+- README must be factually accurate — verify every claim (no "permanent" storage, no features that don't exist)
+- README targets non-dev audience — avoid jargon, explain concepts like CID, link prerequisites
 - Repo: github.com/TippyFlitsUK/filecoin-nova, branch `main`
