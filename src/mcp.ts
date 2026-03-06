@@ -54,10 +54,10 @@ server.registerTool(
       "Optionally update an ENS domain to point to the deployed site. " +
       "Returns the IPFS CID and gateway URL. " +
       "This tool takes about 60 seconds to complete — do not retry if it seems slow. " +
-      "IMPORTANT: Wallet keys are read from the credentials file (~/.config/filecoin-nova/credentials) " +
-      "or environment variables (NOVA_PIN_KEY, NOVA_ENS_KEY). They cannot be passed as parameters. " +
-      "Before calling this tool, confirm with the user that they have run 'nova config' in their terminal " +
-      "to save their Filecoin wallet key. If using ENS, they also need an Ethereum wallet key saved. " +
+      "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
+      "Keys cannot be passed as parameters and must NEVER be requested in chat. " +
+      "Before calling, ask the user if they have run 'nova config' to save their Filecoin wallet key. " +
+      "If using ENS, they also need their Ethereum wallet key saved via 'nova config'. " +
       "Do NOT call this tool without confirming credentials are set up first.",
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
@@ -75,7 +75,7 @@ server.registerTool(
         if (!config.pinKey) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "No Filecoin wallet key found. The user needs to run 'nova config' to save their keys, or set the NOVA_PIN_KEY environment variable." }],
+            content: [{ type: "text" as const, text: "No Filecoin wallet key found. The user needs to run 'nova config' in their terminal to save their wallet key." }],
           };
         }
 
@@ -119,9 +119,10 @@ server.registerTool(
     description:
       "Update an ENS domain's contenthash to point to an IPFS CID. " +
       "Requires an Ethereum wallet with ETH for gas. " +
-      "IMPORTANT: Wallet keys are read from the credentials file or NOVA_ENS_KEY environment variable. " +
-      "They cannot be passed as parameters. Before calling, confirm the user has run 'nova config' " +
-      "to save their Ethereum wallet key. Do NOT call without confirming credentials are set up first.",
+      "IMPORTANT: Requires an Ethereum wallet key set up beforehand via 'nova config' in the terminal. " +
+      "Keys cannot be passed as parameters and must NEVER be requested in chat. " +
+      "Before calling, ask the user if they have run 'nova config'. " +
+      "Do NOT call without confirming credentials are set up first.",
     inputSchema: z.object({
       cid: z.string().describe("IPFS CID to point the ENS domain to"),
       ensName: z.string().describe("ENS domain (e.g. mysite.eth)"),
@@ -137,7 +138,7 @@ server.registerTool(
         if (!ensKey) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "No Ethereum wallet key found. The user needs to run 'nova config' to save their keys, or set the NOVA_ENS_KEY environment variable." }],
+            content: [{ type: "text" as const, text: "No Ethereum wallet key found. The user needs to run 'nova config' in their terminal to save their wallet key." }],
           };
         }
 
