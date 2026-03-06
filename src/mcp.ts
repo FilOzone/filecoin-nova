@@ -8,6 +8,7 @@ import { deploy } from "./deploy.js";
 import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
 import { listPieces, cleanPieces } from "./manage.js";
 import { resolveConfig } from "./config.js";
+import { CID } from "multiformats/cid";
 
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value, (_key, val) =>
@@ -47,7 +48,7 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.3.4" },
+  { name: "filecoin-nova", version: "0.3.5" },
 );
 
 // nova_deploy - Deploy a directory to Filecoin Onchain Cloud
@@ -249,9 +250,13 @@ server.registerTool(
         // Add pin status if credentials are available
         if (cid && config.pinKey) {
           try {
+            let cidV1: string;
+            try { cidV1 = CID.parse(cid).toV1().toString(); } catch { cidV1 = cid; }
             const summaries = await listPieces({ pinKey: config.pinKey, mainnet: true });
             for (const ds of summaries) {
-              const group = ds.groups.find((g) => g.ipfsRootCID === cid);
+              const group = ds.groups.find((g) => {
+                try { return CID.parse(g.ipfsRootCID).toV1().toString() === cidV1; } catch { return g.ipfsRootCID === cid; }
+              });
               if (group) {
                 const pending = group.pieces.filter((p) => p.pendingRemoval).length;
                 output.pinStatus = {

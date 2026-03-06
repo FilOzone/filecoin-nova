@@ -1,6 +1,6 @@
 {
   "name": "filecoin-nova",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Deploy static sites to Filecoin Onchain Cloud with ENS resolution",
   "type": "module",
   "main": "./dist/deploy.js",
