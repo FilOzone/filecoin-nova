@@ -1,13 +1,15 @@
 {
   "name": "filecoin-nova",
   "version": "0.3.7",
-  "description": "Deploy static sites to Filecoin Onchain Cloud with ENS resolution",
+  "description": "Clone, deploy, and manage websites on Filecoin Onchain Cloud with ENS resolution",
   "type": "module",
   "main": "./dist/deploy.js",
   "exports": {
     ".": "./dist/deploy.js",
     "./ens": "./dist/ens.js",
-    "./pin": "./dist/pin.js"
+    "./pin": "./dist/pin.js",
+    "./clone": "./dist/clone.js",
+    "./manage": "./dist/manage.js"
   },
   "bin": {
     "nova": "./dist/cli.js",
@@ -40,9 +42,14 @@
     "@filoz/synapse-sdk": "^0.38.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "ethers": "^6.13.0",
+    "@playwright/browser-chromium": "^1.58.2",
     "multiformats": "^13.0.0",
+    "playwright": "^1.58.2",
     "viem": "^2.47.0",
     "zod": "^4.3.6"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["@playwright/browser-chromium"]
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

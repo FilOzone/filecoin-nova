@@ -27,7 +27,7 @@ export const c = {
 
 export const LOGO = `
 ${c.cyan}${c.bold}  ╔╗╔╔═╗╦  ╦╔═╗${c.reset}
-${c.cyan}${c.bold}  ║║║║ ║╚╗╔╝╠═╣${c.reset}   ${c.dim}Deploy static websites to Filecoin Onchain Cloud${c.reset}
+${c.cyan}${c.bold}  ║║║║ ║╚╗╔╝╠═╣${c.reset}   ${c.dim}Clone, deploy, and manage websites on Filecoin Onchain Cloud${c.reset}
 ${c.cyan}${c.bold}  ╝╚╝╚═╝ ╚╝ ╩ ╩${c.reset}
 `;
 
@@ -101,6 +101,13 @@ export function deployComplete(result: {
     info("No ENS configured — use an IPFS gateway to access your site.");
   }
   console.log("");
+}
+
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
 export function promptLabel(text: string) {

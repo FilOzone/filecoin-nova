@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
-import { existsSync, statSync, readdirSync, lstatSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
-import { deploy } from "./deploy.js";
+import { deploy, dirSize } from "./deploy.js";
 import { getEnsContenthash, updateEnsContenthash } from "./ens.js";
 import { setupFilecoinPinPayments } from "./pin.js";
 import { resolveConfig, readCredentials, writeCredentials, credentialsPath } from "./config.js";
 import { listPieces, cleanPieces, type PieceInfo } from "./manage.js";
 import { ask, close } from "./prompt.js";
-import { c, fail, info, label, labelDim, promptLabel, banner, success } from "./ui.js";
+import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize } from "./ui.js";
 import { CID } from "multiformats/cid";
 
 /** Normalize a CID string to CIDv1 base32 for consistent comparison. */
@@ -55,10 +55,11 @@ function earlyExit(code: number, message?: string): never {
 }
 
 const HELP = `
-  ${c.cyan}${c.bold}Nova${c.reset} ${c.dim}- Deploy static websites to Filecoin Onchain Cloud${c.reset}
+  ${c.cyan}${c.bold}Nova${c.reset} ${c.dim}- Clone, deploy, and manage websites on Filecoin Onchain Cloud${c.reset}
 
   ${c.bold}Usage${c.reset}
 
+    ${c.cyan}nova clone${c.reset} <url> [options]          Clone a website and deploy to Filecoin
     ${c.cyan}nova deploy${c.reset} [path] [options]        Deploy a directory or archive
     ${c.cyan}nova ens${c.reset} <cid> --ens <name>         Point ENS domain to an IPFS CID
     ${c.cyan}nova status${c.reset} [--ens <name>]          Check ENS contenthash
@@ -90,6 +91,8 @@ const HELP = `
 
   ${c.bold}Examples${c.reset}
 
+    ${c.dim}$${c.reset} nova clone https://example.com       ${c.dim}# Clone and deploy a website${c.reset}
+    ${c.dim}$${c.reset} nova clone https://example.com --no-deploy  ${c.dim}# Clone only, don't deploy${c.reset}
     ${c.dim}$${c.reset} nova deploy ./public --ens desite.ezpdpz.eth
     ${c.dim}$${c.reset} nova deploy site.zip
     ${c.dim}$${c.reset} nova deploy ./dist --json
@@ -100,37 +103,7 @@ const HELP = `
     ${c.dim}$${c.reset} nova manage clean --really-do-it
 `;
 
-function dirSize(dir: string, seen = new Set<number>()): number {
-  let total = 0;
-  try {
-    const dirStat = lstatSync(dir);
-    if (seen.has(dirStat.ino)) return 0;
-    seen.add(dirStat.ino);
 
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      try {
-        if (entry.isDirectory()) {
-          total += dirSize(path, seen);
-        } else {
-          total += statSync(path).size;
-        }
-      } catch {
-        // Skip files we can't stat (permission denied, etc.)
-      }
-    }
-  } catch {
-    // Skip directories we can't read
-  }
-  return total;
-}
-
-function humanSize(bytes: number): { size: string; unit: string } {
-  if (bytes < 1024) return { size: String(bytes), unit: "B" };
-  if (bytes < 1024 ** 2) return { size: (bytes / 1024).toFixed(1), unit: "KiB" };
-  if (bytes < 1024 ** 3) return { size: (bytes / 1024 ** 2).toFixed(1), unit: "MiB" };
-  return { size: (bytes / 1024 ** 3).toFixed(2), unit: "GiB" };
-}
 
 /**
  * Resolve a user-provided path: expand ~, make absolute.
@@ -252,7 +225,6 @@ async function runDeploy(args: string[]) {
 
   // Pre-deploy summary (size estimate from the raw input, before archive extraction)
   const bytes = dirSize(resolved);
-  const { size, unit } = humanSize(bytes);
   const TIB = 1024 ** 4;
   const USDFC_PER_TIB = 5;
   const costPerMonth = (bytes / TIB) * USDFC_PER_TIB;
@@ -260,7 +232,7 @@ async function runDeploy(args: string[]) {
   const isMainnet = !values.calibration;
   console.log("");
   label("Path", resolved);
-  label("Size", `${size} ${unit} - ~${costStr} USDFC/month`);
+  label("Size", `${formatSize(bytes)} - ~${costStr} USDFC/month`);
   if (ensName) label("ENS", ensName);
   label("Net", isMainnet ? "mainnet" : "calibration");
 
@@ -665,13 +637,6 @@ async function runManage(args: string[]) {
       return;
     }
 
-    function formatSize(bytes: number): string {
-      if (bytes === 0) return "-";
-      if (bytes < 1024) return `${bytes} B`;
-      if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
-      if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
-      return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
-    }
 
     function center(text: string, width: number): string {
       const pad = Math.max(0, width - text.length);
@@ -1005,6 +970,208 @@ async function runManage(args: string[]) {
   }
 }
 
+async function runClone(args: string[]) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(`
+  ${c.cyan}${c.bold}Nova Clone${c.reset} ${c.dim}- Clone a website and deploy to Filecoin${c.reset}
+
+  ${c.bold}Usage${c.reset}
+
+    ${c.cyan}nova clone${c.reset} <url> [options]
+
+  ${c.bold}Options${c.reset}
+
+    ${c.dim}--no-deploy${c.reset}           Clone only, don't deploy to Filecoin
+    ${c.dim}--output <dir>${c.reset}        Output directory (default: ./domain-timestamp/)
+    ${c.dim}--max-pages <n>${c.reset}       Max pages to crawl (default: 50, 0 = unlimited)
+    ${c.dim}--screenshots${c.reset}         Save before/after screenshot comparison
+    ${c.dim}--ens <name>${c.reset}          ENS domain to update after deploy
+    ${c.dim}--clean${c.reset}               Remove old pieces after deploy
+    ${c.dim}--calibration${c.reset}         Deploy to calibration testnet
+    ${c.dim}--json${c.reset}                Output result as JSON
+
+  ${c.bold}Examples${c.reset}
+
+    ${c.dim}$${c.reset} nova clone https://example.com
+    ${c.dim}$${c.reset} nova clone https://example.com --ens mysite.eth
+    ${c.dim}$${c.reset} nova clone https://example.com --no-deploy --output ./cloned
+    ${c.dim}$${c.reset} nova clone https://example.com --max-pages 10
+`);
+    earlyExit(0);
+  }
+
+  const { values, positionals: pos } = parseArgs({
+    args: args.slice(1),
+    options: {
+      output: { type: "string" },
+      "max-pages": { type: "string" },
+      "no-deploy": { type: "boolean", default: false },
+      screenshots: { type: "boolean", default: false },
+      ens: { type: "string" },
+      "rpc-url": { type: "string" },
+      "provider-id": { type: "string" },
+      clean: { type: "boolean", default: false },
+      calibration: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+
+  const jsonMode = values.json!;
+  if (jsonMode) muteConsole();
+
+  banner();
+
+  let url = pos[0];
+  if (!url) {
+    if (!process.stdin.isTTY) {
+      fail("URL argument required.");
+      info("Usage: nova clone <url>");
+      earlyExit(1, "URL argument required.");
+    }
+    console.log("");
+    const input = await ask(promptLabel("Website URL to clone:"));
+    if (!input) {
+      fail("URL required.");
+      earlyExit(1, "URL required.");
+    }
+    url = input;
+  }
+
+  // Ensure URL has protocol
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    url = `https://${url}`;
+  }
+
+  // Validate URL
+  try {
+    new URL(url);
+  } catch {
+    fail(`Invalid URL: ${url}`);
+    earlyExit(1, `Invalid URL: ${url}`);
+  }
+
+  close();
+
+  const maxPagesRaw = values["max-pages"];
+  const maxPages = maxPagesRaw !== undefined ? Number(maxPagesRaw) : undefined;
+
+  console.log("");
+  label("URL", url);
+  if (values.output) label("Output", values.output);
+  if (maxPages !== undefined) label("Pages", maxPages === 0 ? "unlimited" : `max ${maxPages}`);
+  label("Deploy", values["no-deploy"] ? "no" : "yes");
+  console.log("");
+
+  // Clone
+  const { clone } = await import("./clone.js");
+  const cloneResult = await clone({
+    url,
+    output: values.output,
+    maxPages,
+    screenshots: !!values.screenshots,
+  });
+
+  console.log("");
+  success(`Cloned ${cloneResult.pages} page(s), ${cloneResult.assets} asset(s), ${formatSize(cloneResult.totalSize)}`);
+  label("Dir", cloneResult.directory);
+
+  if (cloneResult.screenshots && cloneResult.screenshots.length > 0) {
+    info(`Screenshots saved to ${cloneResult.directory}_screenshots/`);
+  }
+
+  // Deploy unless --no-deploy
+  if (!values["no-deploy"]) {
+    const config = resolveConfig(process.env);
+    const ensName = values.ens || config.ensName;
+    const isMainnet = !values.calibration;
+
+    if (!config.pinKey) {
+      if (!process.stdin.isTTY) {
+        fail("NOVA_PIN_KEY env var is required to deploy.");
+        info("Use --no-deploy to clone without deploying.");
+        earlyExit(1, "NOVA_PIN_KEY env var is required.");
+      }
+      console.log("");
+      info("NOVA_PIN_KEY not set. Run 'nova config' to save your keys,");
+      info("or enter your Filecoin wallet key below (needs USDFC).");
+      console.log("");
+      const { ask: askPrompt, close: closePrompt } = await import("./prompt.js");
+      const key = await askPrompt(promptLabel("Filecoin wallet private key:"));
+      closePrompt();
+      if (!key) {
+        fail("Cannot deploy without a Filecoin wallet key.");
+        info("Use --no-deploy to clone without deploying.");
+        earlyExit(1, "Cannot deploy without a Filecoin wallet key.");
+      }
+      process.env.NOVA_PIN_KEY = key;
+      config.pinKey = key;
+
+      console.log("");
+      await setupFilecoinPinPayments(isMainnet);
+    }
+
+    console.log("");
+    const deployResult = await deploy({
+      path: cloneResult.directory,
+      pinKey: config.pinKey,
+      ensName,
+      ensKey: config.ensKey,
+      rpcUrl: values["rpc-url"] || config.rpcUrl,
+      providerId: values["provider-id"] ? Number(values["provider-id"]) : config.providerId,
+      mainnet: isMainnet,
+    });
+
+    // Post-deploy cleanup
+    if (values.clean && config.pinKey) {
+      console.log("");
+      info("Cleaning up old pieces...");
+      try {
+        const cleanResult = await cleanPieces({
+          pinKey: config.pinKey,
+          mainnet: isMainnet,
+          keepCids: [deployResult.cid],
+        });
+        if (cleanResult.removed > 0) {
+          success(`Removed ${cleanResult.removed} old piece(s)`);
+        }
+      } catch (err: any) {
+        info(`Cleanup skipped: ${err.message}`);
+      }
+    }
+
+    if (jsonMode) {
+      unmuteConsole();
+      console.log(JSON.stringify({
+        sourceUrl: cloneResult.sourceUrl,
+        pages: cloneResult.pages,
+        assets: cloneResult.assets,
+        cloneDir: cloneResult.directory,
+        cid: deployResult.cid,
+        gatewayUrl: `https://${deployResult.cid}.ipfs.dweb.link`,
+        ...(deployResult.ensName && { ensName: deployResult.ensName }),
+        ...(deployResult.txHash && { txHash: deployResult.txHash }),
+        ...(deployResult.ethLimoUrl && { ethLimoUrl: deployResult.ethLimoUrl }),
+      }));
+    }
+  } else {
+    if (jsonMode) {
+      unmuteConsole();
+      console.log(JSON.stringify({
+        sourceUrl: cloneResult.sourceUrl,
+        pages: cloneResult.pages,
+        assets: cloneResult.assets,
+        directory: cloneResult.directory,
+      }));
+    } else {
+      console.log("");
+      info("Cloned without deploying. To deploy:");
+      console.log(`    ${c.cyan}nova deploy${c.reset} ${cloneResult.directory}`);
+      console.log("");
+    }
+  }
+}
+
 async function runConfig() {
   if (!process.stdin.isTTY) {
     fail("'nova config' requires an interactive terminal.");
@@ -1089,6 +1256,9 @@ async function main() {
   switch (command) {
     case "deploy":
       await runDeploy(args);
+      break;
+    case "clone":
+      await runClone(args);
       break;
     case "ens":
       await runEns(args);

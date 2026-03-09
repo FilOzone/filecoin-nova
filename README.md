@@ -1,15 +1,20 @@
 # Filecoin Nova
 
-Deploy and manage websites on [Filecoin Onchain Cloud](https://filecoin.cloud) in one command. Your site is stored onchain on the Filecoin network - no traditional hosting, no servers to manage.
+Clone any website, store it onchain on the Filecoin network, and give it an ENS name -- all in one command.
 
-- **One-command deploy** - `nova deploy ./dist` and you're live
-- **MCP server** - deploy and manage storage directly from Claude Code, Claude Desktop, Cursor, Windsurf, or VS Code
-- **ENS integration** - point an ENS domain to your site so anyone can visit `yoursite.eth.limo`
+```bash
+nova clone https://example.com --ens mysite.eth
+```
+
+Nova crawls a website with a headless browser, captures every page and asset, rewrites all URLs to local paths, deploys the static copy to [Filecoin Onchain Cloud](https://filecoin.cloud), and optionally points an ENS domain at it. The result is an exact clone hosted on decentralized infrastructure -- no servers, no traditional hosting.
+
+- **End-to-end cloning** - crawl, capture, rewrite, deploy, and ENS update in a single command
+- **Deploy your own sites** - `nova deploy ./dist` works with any static directory or archive
+- **MCP server** - clone and deploy directly from Claude Code, Claude Desktop, Cursor, Windsurf, or VS Code
 - **Storage management** - list, inspect, and clean up old deploys to control costs
 - **CI-ready** - `--json` output and env var config for GitHub Actions and other pipelines
-- **Library API** - import `deploy` into your own tools and scripts
 
-Storage costs under $0.10/month for a typical website. No servers, no infrastructure, no monthly hosting bills.
+Storage costs under $0.10/month for a typical website.
 
 ---
 
@@ -19,7 +24,13 @@ Storage costs under $0.10/month for a typical website. No servers, no infrastruc
 
 ```bash
 npm install -g filecoin-nova
-nova deploy
+nova clone https://example.com
+```
+
+Clone any website to Filecoin in one command. Or deploy your own site:
+
+```bash
+nova deploy ./dist
 ```
 
 Nova will walk you through everything - no setup needed beforehand.
@@ -92,6 +103,29 @@ Settings > MCP > Add MCP Server. Set command to `npx`, args to `-y --package fil
 
 ---
 
+## Clone a Website
+
+```bash
+# Clone and deploy to Filecoin in one command
+nova clone https://example.com
+
+# Clone only, don't deploy
+nova clone https://example.com --no-deploy
+
+# Limit crawl depth
+nova clone https://example.com --max-pages 10
+
+# Clone, deploy, and update ENS
+nova clone https://example.com --ens mysite.eth
+
+# Clone and remove old deploys
+nova clone https://example.com --clean
+```
+
+Nova uses a headless browser to crawl the site, capture all pages and assets, rewrite URLs to local paths, then deploy the static copy to Filecoin.
+
+---
+
 ## Deploy Your Site
 
 ```bash
@@ -152,7 +186,8 @@ Cleanup is safe by default - `nova manage clean` only shows a plan without delet
 
 | Command | What it does |
 |---------|-------------|
-| `nova deploy [path]` | Deploy a website to Filecoin Onchain Cloud |
+| `nova clone <url>` | Clone a website and deploy to Filecoin |
+| `nova deploy [path]` | Deploy a directory or archive to Filecoin Onchain Cloud |
 | `nova ens <cid> --ens <name>` | Point an ENS domain to an existing CID |
 | `nova status --ens <name>` | Check what an ENS domain currently points to |
 | `nova manage` | List all pinned pieces grouped by deploy |
@@ -163,12 +198,16 @@ Cleanup is safe by default - `nova manage clean` only shows a plan without delet
 
 | Flag | Commands | What it does |
 |------|----------|-------------|
-| `--ens <name>` | deploy, ens, status | ENS domain (e.g. `mysite.eth`) |
-| `--rpc-url <url>` | deploy, ens, status | Custom Ethereum RPC |
-| `--provider-id <id>` | deploy | Storage provider ID |
-| `--clean` | deploy | After deploying, remove ALL other pieces (only new deploy is kept) |
-| `--calibration` | deploy, manage | Use testnet instead of mainnet |
-| `--json` | deploy, ens, status, manage | Machine-readable JSON output (for CI/scripts) |
+| `--no-deploy` | clone | Clone only, don't deploy to Filecoin |
+| `--max-pages <n>` | clone | Max pages to crawl (default: 50, 0 = unlimited) |
+| `--screenshots` | clone | Save before/after screenshot comparison |
+| `--output <dir>` | clone | Output directory for cloned site |
+| `--ens <name>` | clone, deploy, ens, status | ENS domain (e.g. `mysite.eth`) |
+| `--rpc-url <url>` | clone, deploy, ens, status | Custom Ethereum RPC |
+| `--provider-id <id>` | clone, deploy | Storage provider ID |
+| `--clean` | clone, deploy | After deploying, remove ALL other pieces (only new deploy is kept) |
+| `--calibration` | clone, deploy, manage | Use testnet instead of mainnet |
+| `--json` | clone, deploy, ens, status, manage | Machine-readable JSON output (for CI/scripts) |
 | `--really-do-it` | manage clean | Execute the cleanup (without this, clean is a dry-run) |
 | `--keep <cid,...>` | manage clean | Keep specific CIDs, remove everything else |
 | `--remove <cid,...>` | manage clean | Remove specific CIDs only |

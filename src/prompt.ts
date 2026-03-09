@@ -1,7 +1,6 @@
 import { createInterface, Interface } from "node:readline";
 
 let rl: Interface | null = null;
-let closed = false;
 
 function getRL(): Interface {
   if (!rl) {
@@ -25,8 +24,8 @@ export function ask(question: string): Promise<string> {
 }
 
 export function close(): void {
-  if (!closed && rl) {
-    closed = true;
+  if (rl) {
     rl.close();
+    rl = null;
   }
 }

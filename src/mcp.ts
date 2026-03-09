@@ -9,6 +9,12 @@ import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
 import { listPieces, cleanPieces } from "./manage.js";
 import { resolveConfig } from "./config.js";
 import { CID } from "multiformats/cid";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join, dirname } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
 
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value, (_key, val) =>
@@ -48,7 +54,7 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 const server = new McpServer(
-  { name: "filecoin-nova", version: "0.3.7" },
+  { name: "filecoin-nova", version: pkg.version },
 );
 
 // nova_deploy - Deploy a directory to Filecoin Onchain Cloud

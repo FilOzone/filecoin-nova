@@ -377,6 +377,7 @@ export async function updateEnsContenthash(
     gSuccess(`Wallet ${c.dim}${wallet.address}${c.reset}`);
   } catch {
     gutterBottom();
+    provider.destroy();
     throw new Error(
       "Invalid Ethereum wallet key.\n\n" +
         "  Check the key saved via 'nova config' or the NOVA_ENS_KEY env var."
@@ -389,6 +390,7 @@ export async function updateEnsContenthash(
     contenthash = encodeIpfsContenthash(ipfsCid);
   } catch (err: any) {
     gutterBottom();
+    provider.destroy();
     throw new Error(
       `Invalid IPFS CID: ${ipfsCid}\n\n` +
         `  ${err.message || "Could not parse CID"}`
@@ -445,6 +447,8 @@ export async function updateEnsContenthash(
     gSuccess("ENS domain updated");
     gutterBottom();
 
+    provider.destroy();
+
     return {
       txHash: tx.hash,
       ensName: config.ensName,
@@ -453,6 +457,7 @@ export async function updateEnsContenthash(
     };
   } catch (err: any) {
     gutterBottom();
+    provider.destroy();
     throw new Error(friendlyEnsError(err, config.ensName));
   }
 }
@@ -471,31 +476,43 @@ export async function getEnsContenthash(
   const mainnetNetwork = Network.from("mainnet");
   const errors: string[] = [];
 
-  for (const url of rpcUrls) {
-    try {
-      const provider = new ethers.JsonRpcProvider(url, mainnetNetwork, {
-        staticNetwork: mainnetNetwork,
-      });
-      const resolver = await Promise.race([
-        provider.getResolver(ensName),
-        new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error("timeout")), STATUS_RPC_TIMEOUT_MS)
-        ),
-      ]);
-      if (!resolver) {
-        return null;
+  // Probe all RPCs in parallel — first success wins
+  const providers = rpcUrls.map((url) =>
+    new ethers.JsonRpcProvider(url, mainnetNetwork, {
+      staticNetwork: mainnetNetwork,
+    })
+  );
+
+  const result = await Promise.any(
+    providers.map(async (provider, i) => {
+      try {
+        const resolver = await Promise.race([
+          provider.getResolver(ensName),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error("timeout")), STATUS_RPC_TIMEOUT_MS)
+          ),
+        ]);
+        if (!resolver) {
+          return { value: null as string | null, provider };
+        }
+        const hash = await Promise.race([
+          resolver.getContentHash(),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error("timeout")), STATUS_RPC_TIMEOUT_MS)
+          ),
+        ]);
+        return { value: hash, provider };
+      } catch (err: any) {
+        errors.push(`${new URL(rpcUrls[i]).hostname}: ${err.message?.slice(0, 60) || "failed"}`);
+        throw err;
       }
-      return await Promise.race([
-        resolver.getContentHash(),
-        new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error("timeout")), STATUS_RPC_TIMEOUT_MS)
-        ),
-      ]);
-    } catch (err: any) {
-      errors.push(`${new URL(url).hostname}: ${err.message?.slice(0, 60) || "failed"}`);
-      // Try next RPC
-    }
-  }
+    })
+  ).catch(() => null);
+
+  // Clean up all providers
+  for (const p of providers) p.destroy();
+
+  if (result) return result.value;
 
   throw new Error(
     `Cannot check ENS status for ${ensName}.\n\n` +

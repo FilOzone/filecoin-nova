@@ -31,7 +31,7 @@ export interface DeployResult {
   directory: string;
 }
 
-function dirSize(dir: string, seen = new Set<number>()): number {
+export function dirSize(dir: string, seen = new Set<number>()): number {
   let total = 0;
   try {
     const dirStat = lstatSync(dir);
@@ -169,9 +169,6 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
 
     deployComplete(result);
 
-    // Quick gateway verification — non-blocking, doesn't fail the deploy
-    await verifyGateway(result.cid);
-
     return result;
   } finally {
     if (extractedDir) {
@@ -180,28 +177,3 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
   }
 }
 
-const VERIFY_TIMEOUT_MS = 15_000;
-const GATEWAY_URL = "https://dweb.link/ipfs/";
-
-async function verifyGateway(cid: string): Promise<void> {
-  info("Verifying content is reachable...");
-  try {
-    const url = `${GATEWAY_URL}${cid}`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
-
-    const res = await fetch(url, {
-      method: "HEAD",
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-
-    if (res.ok) {
-      success("Content verified — live on IPFS gateway");
-    } else {
-      info(`Gateway returned ${res.status} — content may take a few minutes to propagate.`);
-    }
-  } catch {
-    info("Gateway not responding yet — content may take a few minutes to propagate.");
-  }
-}
