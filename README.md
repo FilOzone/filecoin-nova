@@ -10,7 +10,7 @@ Your site gets a permanent, censorship-resistant copy on [Filecoin Onchain Cloud
 
 - **One command** -- point Nova at your site and it handles everything
 - **No migration** -- your existing site stays exactly as it is
-- **Under $0.10/month** -- a fraction of traditional hosting costs
+- **Low cost** -- a fraction of traditional hosting fees
 - **No servers to manage** -- content is stored onchain, served via IPFS gateways
 - **Works with any site** -- static sites, React, Next.js, Vue, Nuxt, WordPress, Webflow
 - **ENS domains** -- give your decentralized site a human-readable `.eth.limo` address
