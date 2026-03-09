@@ -1,6 +1,6 @@
 # Filecoin Nova
 
-Take your website decentralized. Nova creates an exact static copy of your site and deploys it to the Filecoin network in seconds -- no server migration, no infrastructure changes.
+Move your website to the decentralized web. Nova creates an exact static copy of your site and deploys it to the Filecoin network in seconds -- no server migration, no infrastructure changes.
 
 ```bash
 npx filecoin-nova demo https://your-site.com
