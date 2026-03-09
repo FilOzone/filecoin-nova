@@ -225,8 +225,8 @@ export async function setupFilecoinPinPayments(
     if (!env.PRIVATE_KEY) {
       throw new Error(
         "No Filecoin auth configured.\n\n" +
-          "  Run 'nova config' to save your session key or wallet key,\n" +
-          "  or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars."
+          "  Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars,\n" +
+          "  or create a session key at https://session.focify.eth.limo"
       );
     }
   }
@@ -347,8 +347,8 @@ export async function pinToFoc(config: PinConfig): Promise<PinResult> {
     if (!env.PRIVATE_KEY) {
       throw new Error(
         "No Filecoin auth configured.\n\n" +
-          "  Run 'nova config' to save your session key or wallet key,\n" +
-          "  or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars."
+          "  Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars,\n" +
+          "  or create a session key at https://session.focify.eth.limo"
       );
     }
   }

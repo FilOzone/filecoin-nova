@@ -1,0 +1,88 @@
+/**
+ * Demo mode -- zero-config calibnet deploys using an embedded session key.
+ * The session key is scoped to storage operations only (cannot transfer funds).
+ * Accepts a URL (clone + deploy) or a directory path (deploy directly).
+ */
+
+// Embedded calibnet session key (safe to publish -- scoped, calibnet only)
+export const DEMO_SESSION_KEY = "0x7b029c6a96fdd59a3276749b2cea67497eda13d19176ae1c8be7c39cf37a807a";
+export const DEMO_WALLET_ADDRESS = "0x12e83c954051b7c91f70d001f80dc9ff91737b83";
+export const DEMO_NETWORK = "calibration";
+
+export interface DemoResult {
+  cid: string;
+  gatewayUrl: string;
+  directory: string;
+  cloned?: boolean;
+  sourceUrl?: string;
+  pages?: number;
+}
+
+function isUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input) || /^[a-z0-9-]+\.[a-z]{2,}/i.test(input);
+}
+
+function normalizeUrl(input: string): string {
+  if (!/^https?:\/\//i.test(input)) {
+    return `https://${input}`;
+  }
+  return input;
+}
+
+/**
+ * Demo deploy: clone a URL or deploy a directory to calibnet.
+ * No credentials needed.
+ */
+export async function demoDeploy(input: string, opts?: { maxPages?: number }): Promise<DemoResult> {
+  const { deploy } = await import("./deploy.js");
+
+  let deployPath = input;
+  let cloned = false;
+  let sourceUrl: string | undefined;
+  let pages: number | undefined;
+
+  if (isUrl(input)) {
+    const { clone } = await import("./clone.js");
+    const url = normalizeUrl(input);
+    sourceUrl = url;
+
+    const cloneResult = await clone({
+      url,
+      maxPages: opts?.maxPages ?? 50,
+    });
+
+    deployPath = cloneResult.directory;
+    cloned = true;
+    pages = cloneResult.pages;
+  }
+
+  let result;
+  try {
+    result = await deploy({
+      path: deployPath,
+      sessionKey: DEMO_SESSION_KEY,
+      walletAddress: DEMO_WALLET_ADDRESS,
+      mainnet: false,
+    });
+  } catch (err: any) {
+    const msg = (err.message || "").toLowerCase();
+    if (msg.includes("insufficient") || msg.includes("balance") || msg.includes("usdfc")) {
+      throw new Error(
+        "Demo wallet is out of funds.\n\n" +
+          "  The shared demo wallet has run out of calibnet USDFC.\n" +
+          "  For permanent hosting, create your own session key at:\n" +
+          "  https://session.focify.eth.limo"
+      );
+    }
+    throw err;
+  }
+
+  return {
+    cid: result.cid,
+    gatewayUrl: `https://${result.cid}.ipfs.dweb.link/`,
+    directory: result.directory,
+    cloned,
+    sourceUrl,
+    pages,
+  };
+}

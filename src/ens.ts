@@ -147,7 +147,7 @@ function friendlyEnsError(err: any, ensName: string): string {
   if (msg.includes("invalid private key") || msg.includes("invalid arrayify")) {
     return (
       `ENS update failed: Invalid Ethereum wallet key.\n\n` +
-      "  Check the key saved via 'nova config' or the NOVA_ENS_KEY env var."
+      "  Check the NOVA_ENS_KEY env var."
     );
   }
 
@@ -380,7 +380,7 @@ export async function updateEnsContenthash(
     provider.destroy();
     throw new Error(
       "Invalid Ethereum wallet key.\n\n" +
-        "  Check the key saved via 'nova config' or the NOVA_ENS_KEY env var."
+        "  Check the NOVA_ENS_KEY env var."
     );
   }
 

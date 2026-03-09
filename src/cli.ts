@@ -5,9 +5,11 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { deploy, dirSize } from "./deploy.js";
+import { demoDeploy, DEMO_SESSION_KEY, DEMO_WALLET_ADDRESS } from "./demo.js";
 import { getEnsContenthash, updateEnsContenthash } from "./ens.js";
-import { setupFilecoinPinPayments } from "./pin.js";
-import { resolveConfig, readCredentials, writeCredentials, credentialsPath, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
+import { resolveConfig, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
+import { ensSigningUrl, sessionKeySigningUrl } from "./signing-url.js";
+import { pollEnsContenthash, pollSessionKeyRegistered } from "./poll.js";
 import { listPieces, cleanPieces, type PieceInfo } from "./manage.js";
 import { ask, close } from "./prompt.js";
 import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize } from "./ui.js";
@@ -59,22 +61,25 @@ const HELP = `
 
   ${c.bold}Usage${c.reset}
 
+    ${c.cyan}nova demo${c.reset} <url-or-path>              Try Nova instantly -- no wallet needed
     ${c.cyan}nova clone${c.reset} <url> [options]          Clone a website and deploy to Filecoin
     ${c.cyan}nova deploy${c.reset} [path] [options]        Deploy a directory or archive
     ${c.cyan}nova ens${c.reset} <cid> --ens <name>         Point ENS domain to an IPFS CID
     ${c.cyan}nova status${c.reset} [--ens <name>]          Check ENS contenthash
     ${c.cyan}nova manage${c.reset} [clean]                 Manage pinned pieces and storage costs
-    ${c.cyan}nova config${c.reset}                         Set up wallet keys and defaults
     ${c.cyan}nova help${c.reset}                           Show this help
     ${c.cyan}nova --version${c.reset}                      Show version
 
-  ${c.bold}Environment Variables${c.reset}
+  ${c.bold}Auth${c.reset}
 
-    ${c.cyan}NOVA_SESSION_KEY${c.reset}     Session key for storage auth (preferred, scoped)
+    No private keys needed. Nova opens your browser for wallet signing via MetaMask.
+    For CI/automation, set env vars instead:
+
+    ${c.cyan}NOVA_SESSION_KEY${c.reset}     Session key for storage auth (scoped, safe)
     ${c.cyan}NOVA_WALLET_ADDRESS${c.reset}  Wallet address for session key auth
-    ${c.cyan}NOVA_PIN_KEY${c.reset}         Filecoin wallet private key (fallback for CI)
-    ${c.cyan}NOVA_ENS_KEY${c.reset}         Ethereum wallet key (for ENS updates)
-    ${c.cyan}NOVA_ENS_NAME${c.reset}        ENS domain (e.g. desite.ezpdpz.eth)
+    ${c.cyan}NOVA_PIN_KEY${c.reset}         Filecoin wallet private key (CI fallback)
+    ${c.cyan}NOVA_ENS_KEY${c.reset}         Ethereum wallet key (CI fallback for ENS)
+    ${c.cyan}NOVA_ENS_NAME${c.reset}        Default ENS domain
     ${c.cyan}NOVA_RPC_URL${c.reset}         Ethereum RPC URL (override default RPCs)
     ${c.cyan}NOVA_PROVIDER_ID${c.reset}     Storage provider ID
 
@@ -93,14 +98,12 @@ const HELP = `
 
   ${c.bold}Examples${c.reset}
 
+    ${c.dim}$${c.reset} nova demo filoz.org                  ${c.dim}# Try instantly, no wallet needed${c.reset}
     ${c.dim}$${c.reset} nova clone https://example.com       ${c.dim}# Clone and deploy a website${c.reset}
-    ${c.dim}$${c.reset} nova clone https://example.com --no-deploy  ${c.dim}# Clone only, don't deploy${c.reset}
-    ${c.dim}$${c.reset} nova deploy ./public --ens desite.ezpdpz.eth
-    ${c.dim}$${c.reset} nova deploy site.zip
-    ${c.dim}$${c.reset} nova deploy ./dist --json
-    ${c.dim}$${c.reset} nova deploy ./dist --clean          ${c.dim}# Deploy and remove ALL old pieces${c.reset}
+    ${c.dim}$${c.reset} nova deploy ./public --ens mysite.eth
+    ${c.dim}$${c.reset} nova deploy ./dist --clean           ${c.dim}# Deploy and remove ALL old pieces${c.reset}
     ${c.dim}$${c.reset} nova ens bafybei... --ens mysite.eth
-    ${c.dim}$${c.reset} nova status --ens mysite.eth --json
+    ${c.dim}$${c.reset} nova status --ens mysite.eth
     ${c.dim}$${c.reset} nova manage
     ${c.dim}$${c.reset} nova manage clean --really-do-it
 `;
@@ -132,6 +135,8 @@ async function runDeploy(args: string[]) {
       ens: { type: "string" },
       "rpc-url": { type: "string" },
       "provider-id": { type: "string" },
+      "session-key": { type: "string" },
+      "wallet-address": { type: "string" },
       clean: { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -146,33 +151,42 @@ async function runDeploy(args: string[]) {
   banner();
 
   const config = resolveConfig(process.env);
+  if (values["session-key"]) config.sessionKey = values["session-key"];
+  if (values["wallet-address"]) config.walletAddress = values["wallet-address"];
 
   let directory: string | undefined = pos[0];
   let ensName = values.ens || config.ensName;
 
-  // 1. Filecoin auth (session key preferred, raw key fallback)
+  // 1. Filecoin auth (session key preferred, env var fallback, browser signing)
   if (!hasStorageAuth(config)) {
     if (!process.stdin.isTTY) {
       fail("No Filecoin auth configured.");
-      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS, or NOVA_PIN_KEY env var.");
+      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.");
       earlyExit(1, "No Filecoin auth configured.");
     }
+    const chain = values.calibration ? "calibration" : "mainnet";
+    const url = sessionKeySigningUrl(chain);
     console.log("");
-    info("No Filecoin auth found. Run 'nova config' to save your session key,");
-    info("or enter your Filecoin wallet key below (needs USDFC).");
+    info("No session key found. Create one in your browser:");
     console.log("");
-    const key = await ask(promptLabel("Filecoin wallet private key:"));
-    if (!key) {
-      fail("Cannot deploy without Filecoin auth.");
-      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS, or NOVA_PIN_KEY.");
-      earlyExit(1, "Cannot deploy without Filecoin auth.");
+    info(`  ${c.cyan}${url}${c.reset}`);
+    console.log("");
+    info("Connect your MetaMask wallet, sign the transaction, then paste the session key below.");
+    console.log("");
+    const sk = await ask(promptLabel("Session key:"));
+    if (!sk) {
+      fail("Cannot deploy without a session key.");
+      earlyExit(1, "Cannot deploy without a session key.");
     }
-    process.env.NOVA_PIN_KEY = key;
-    config.pinKey = key;
-
-    // Set up payments on first use
-    console.log("");
-    await setupFilecoinPinPayments(!values.calibration);
+    const wa = await ask(promptLabel("Wallet address:"));
+    if (!wa) {
+      fail("Wallet address is required with session key.");
+      earlyExit(1, "Wallet address is required.");
+    }
+    config.sessionKey = sk;
+    config.walletAddress = wa;
+    process.env.NOVA_SESSION_KEY = sk;
+    process.env.NOVA_WALLET_ADDRESS = wa;
   }
 
   // 2. Directory or archive
@@ -197,26 +211,7 @@ async function runDeploy(args: string[]) {
     earlyExit(1, `Invalid ENS domain: ${ensName}`);
   }
 
-  // 4. Ethereum wallet key (only if ENS is being used)
-  if (ensName && !config.ensKey) {
-    if (!process.stdin.isTTY) {
-      fail("NOVA_ENS_KEY env var is required for ENS updates.");
-      info("Set it to your Ethereum wallet private key (needs ETH for gas).");
-      earlyExit(1, "NOVA_ENS_KEY env var is required for ENS updates.");
-    }
-    console.log("");
-    info("NOVA_ENS_KEY not set. Run 'nova config' to save your keys,");
-    info("or enter your Ethereum wallet key below (needs ETH for gas).");
-    console.log("");
-    const key = await ask(promptLabel("Ethereum wallet private key:"));
-    if (!key) {
-      fail("Cannot deploy without an Ethereum wallet key.");
-      info("Set NOVA_ENS_KEY env var or run 'nova config'.");
-      earlyExit(1, "Cannot deploy without an Ethereum wallet key.");
-    }
-    process.env.NOVA_ENS_KEY = key;
-    config.ensKey = key;
-  }
+  // 4. ENS: if no key, deploy will skip ENS step, we handle browser signing after
 
   // Validate path exists before showing summary
   const resolved = resolvePath(directory);
@@ -271,6 +266,44 @@ async function runDeploy(args: string[]) {
     providerId: parsedProviderId,
     mainnet: isMainnet,
   });
+
+  // Post-deploy ENS via browser signing (when no ensKey)
+  if (ensName && !config.ensKey && !result.txHash) {
+    const url = ensSigningUrl(ensName, result.cid);
+    console.log("");
+    info(`Sign the ENS update in your browser:`);
+    console.log("");
+    info(`  ${c.cyan}${url}${c.reset}`);
+    console.log("");
+
+    if (process.stdin.isTTY && !jsonMode) {
+      info("Waiting for ENS contenthash update...");
+      const POLL_INTERVAL = 5_000;
+      const POLL_TIMEOUT = 300_000; // 5 minutes
+      const start = Date.now();
+      let confirmed = false;
+      while (Date.now() - start < POLL_TIMEOUT) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+        const poll = await pollEnsContenthash(ensName, result.cid, values["rpc-url"] || config.rpcUrl);
+        if (poll.confirmed) {
+          confirmed = true;
+          result.ensName = ensName;
+          result.ethLimoUrl = `https://${ensName.replace(/\.eth$/, "")}.eth.limo`;
+          success(`ENS updated: ${c.bold}${result.ethLimoUrl}${c.reset}`);
+          break;
+        }
+        if (process.stderr.isTTY) {
+          const elapsed = Math.round((Date.now() - start) / 1000);
+          process.stderr.write(`\r  ${c.dim}Polling... ${elapsed}s${c.reset}`);
+        }
+      }
+      if (process.stderr.isTTY) process.stderr.write("\r" + " ".repeat(30) + "\r");
+      if (!confirmed) {
+        info("ENS update not detected yet. It may still be pending.");
+        info(`Check: nova status --ens ${ensName}`);
+      }
+    }
+  }
 
   // Post-deploy cleanup
   let cleanedResult: { removed: number; failed: number; keptCids: string[]; error?: string } | undefined;
@@ -372,7 +405,7 @@ async function runStatus(args: string[]) {
   // Extract CID from contenthash (format: "ipfs://bafybei...")
   const cid = contenthash?.startsWith("ipfs://") ? contenthash.slice(7) : null;
 
-  // Check pin status if we have credentials and a CID
+  // Check pin status if we have storage auth and a CID
   let pinStatus: { totalPieces: number; activePieces: number; pendingRemoval: number } | null = null;
   if (cid && hasStorageAuth(config)) {
     try {
@@ -480,26 +513,6 @@ async function runEns(args: string[]) {
     earlyExit(1, `Invalid ENS domain: ${ensName}`);
   }
 
-  // Ethereum wallet key
-  if (!config.ensKey) {
-    if (!process.stdin.isTTY) {
-      fail("NOVA_ENS_KEY env var is required for ENS updates.");
-      info("Set it to your Ethereum wallet private key (needs ETH for gas).");
-      earlyExit(1, "NOVA_ENS_KEY env var is required for ENS updates.");
-    }
-    console.log("");
-    info("NOVA_ENS_KEY not set. Run 'nova config' to save your keys,");
-    info("or enter your Ethereum wallet key below (needs ETH for gas).");
-    console.log("");
-    const key = await ask(promptLabel("Ethereum wallet private key:"));
-    if (!key) {
-      fail("Cannot update ENS without an Ethereum wallet key.");
-      info("Set NOVA_ENS_KEY env var or run 'nova config'.");
-      earlyExit(1, "Cannot update ENS without an Ethereum wallet key.");
-    }
-    config.ensKey = key;
-  }
-
   close();
 
   // Summary
@@ -508,32 +521,87 @@ async function runEns(args: string[]) {
   label("ENS", ensName);
   console.log("");
 
-  const result = await updateEnsContenthash(
-    {
-      ensName,
-      privateKey: config.ensKey,
-      rpcUrl: values["rpc-url"] || config.rpcUrl,
-    },
-    cid
-  );
+  if (config.ensKey) {
+    // Direct execution with key
+    const result = await updateEnsContenthash(
+      {
+        ensName,
+        privateKey: config.ensKey,
+        rpcUrl: values["rpc-url"] || config.rpcUrl,
+      },
+      cid
+    );
 
-  if (jsonMode) {
-    unmuteConsole();
-    console.log(JSON.stringify({
-      ensName: result.ensName,
-      cid,
-      txHash: result.txHash,
-      contenthash: result.contenthash,
-      ethLimoUrl: result.ethLimoUrl,
-    }));
+    if (jsonMode) {
+      unmuteConsole();
+      console.log(JSON.stringify({
+        ensName: result.ensName,
+        cid,
+        txHash: result.txHash,
+        contenthash: result.contenthash,
+        ethLimoUrl: result.ethLimoUrl,
+      }));
+    } else {
+      console.log("");
+      success("ENS domain updated");
+      console.log("");
+      label("ENS", result.ensName);
+      label("TX", result.txHash);
+      label("URL", result.ethLimoUrl);
+      console.log("");
+    }
   } else {
-    console.log("");
-    success("ENS domain updated");
-    console.log("");
-    label("ENS", result.ensName);
-    label("TX", result.txHash);
-    label("URL", result.ethLimoUrl);
-    console.log("");
+    // Browser signing flow
+    const url = ensSigningUrl(ensName, cid);
+
+    if (jsonMode) {
+      unmuteConsole();
+      console.log(JSON.stringify({
+        status: "awaiting_signature",
+        signingUrl: url,
+        ensName,
+        cid,
+      }));
+    } else {
+      info("Sign the ENS update in your browser:");
+      console.log("");
+      info(`  ${c.cyan}${url}${c.reset}`);
+      console.log("");
+
+      if (process.stdin.isTTY) {
+        info("Waiting for ENS contenthash update...");
+        const POLL_INTERVAL = 5_000;
+        const POLL_TIMEOUT = 300_000;
+        const start = Date.now();
+        let confirmed = false;
+        while (Date.now() - start < POLL_TIMEOUT) {
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+          const poll = await pollEnsContenthash(ensName, cid, values["rpc-url"] || config.rpcUrl);
+          if (poll.confirmed) {
+            confirmed = true;
+            const ethLimoUrl = `https://${ensName.replace(/\.eth$/, "")}.eth.limo`;
+            console.log("");
+            success("ENS domain updated");
+            console.log("");
+            label("ENS", ensName);
+            label("URL", ethLimoUrl);
+            console.log("");
+            break;
+          }
+          if (process.stderr.isTTY) {
+            const elapsed = Math.round((Date.now() - start) / 1000);
+            process.stderr.write(`\r  ${c.dim}Polling... ${elapsed}s${c.reset}`);
+          }
+        }
+        if (process.stderr.isTTY) process.stderr.write("\r" + " ".repeat(30) + "\r");
+        if (!confirmed) {
+          console.log("");
+          info("ENS update not detected yet. It may still be pending.");
+          info(`Check: nova status --ens ${ensName}`);
+          console.log("");
+        }
+      }
+    }
   }
 }
 
@@ -588,6 +656,8 @@ async function runManage(args: string[]) {
       "keep-copies": { type: "boolean", default: false },
       "really-do-it": { type: "boolean", default: false },
       "dataset-id": { type: "string" },
+      "session-key": { type: "string" },
+      "wallet-address": { type: "string" },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
@@ -598,24 +668,35 @@ async function runManage(args: string[]) {
   if (jsonMode) muteConsole();
 
   const config = resolveConfig(process.env);
+  if (values["session-key"]) config.sessionKey = values["session-key"];
+  if (values["wallet-address"]) config.walletAddress = values["wallet-address"];
   const mainnet = !values.calibration;
 
   if (!hasStorageAuth(config)) {
     if (!process.stdin.isTTY) {
       fail("No Filecoin auth configured.");
-      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS, or NOVA_PIN_KEY env var.");
+      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.");
       earlyExit(1, "No Filecoin auth configured.");
     }
+    const chain = values.calibration ? "calibration" : "mainnet";
+    const url = sessionKeySigningUrl(chain);
     console.log("");
-    info("No Filecoin auth found. Run 'nova config' to save your session key,");
-    info("or enter your Filecoin wallet key below.");
+    info("No session key found. Create one in your browser:");
     console.log("");
-    const key = await ask(promptLabel("Filecoin wallet private key:"));
-    if (!key) {
-      fail("Cannot manage without Filecoin auth.");
-      earlyExit(1, "Cannot manage without Filecoin auth.");
+    info(`  ${c.cyan}${url}${c.reset}`);
+    console.log("");
+    const sk = await ask(promptLabel("Session key:"));
+    if (!sk) {
+      fail("Cannot manage without a session key.");
+      earlyExit(1, "Cannot manage without a session key.");
     }
-    config.pinKey = key;
+    const wa = await ask(promptLabel("Wallet address:"));
+    if (!wa) {
+      fail("Wallet address is required.");
+      earlyExit(1, "Wallet address is required.");
+    }
+    config.sessionKey = sk;
+    config.walletAddress = wa;
   }
 
   close();
@@ -801,14 +882,15 @@ async function runManage(args: string[]) {
 
     if (hasRemoveFlag) {
       for (const cid of removeCids) {
-        if (!target.groups.find((g) => g.ipfsRootCID === cid)) {
+        const cidV1 = toCidV1(cid);
+        if (!target.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1)) {
           fail(`CID not found in dataset: ${cid}`);
           earlyExit(1, `CID not found: ${cid}`);
         }
       }
-      const removeSet = new Set(removeCids);
+      const removeSetV1 = new Set(removeCids.map(toCidV1));
       for (const g of target.groups) {
-        if (removeSet.has(g.ipfsRootCID)) {
+        if (removeSetV1.has(toCidV1(g.ipfsRootCID))) {
           const active = activeCount(g);
           if (active > 0) {
             piecesToRemove += active;
@@ -829,16 +911,18 @@ async function runManage(args: string[]) {
         return;
       }
 
-      // Validate all keep CIDs exist
+      // Validate all keep CIDs exist (normalize to v1 for comparison)
+      const keepSetV1 = new Set([...keepSet].map(toCidV1));
       for (const cid of keepSet) {
-        if (!target.groups.find((g) => g.ipfsRootCID === cid)) {
+        const cidV1 = toCidV1(cid);
+        if (!target.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1)) {
           fail(`CID not found in dataset: ${cid}`);
           earlyExit(1, `CID not found: ${cid}`);
         }
       }
 
       for (const g of target.groups) {
-        if (keepSet.has(g.ipfsRootCID)) {
+        if (keepSetV1.has(toCidV1(g.ipfsRootCID))) {
           keptCids.push(g.ipfsRootCID);
           // Dedup within kept groups (only active pieces)
           const active = activeCount(g);
@@ -1019,6 +1103,8 @@ async function runClone(args: string[]) {
       ens: { type: "string" },
       "rpc-url": { type: "string" },
       "provider-id": { type: "string" },
+      "session-key": { type: "string" },
+      "wallet-address": { type: "string" },
       clean: { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -1063,7 +1149,15 @@ async function runClone(args: string[]) {
   close();
 
   const maxPagesRaw = values["max-pages"];
-  const maxPages = maxPagesRaw !== undefined ? Number(maxPagesRaw) : undefined;
+  let maxPages: number | undefined;
+  if (maxPagesRaw !== undefined) {
+    const n = Number(maxPagesRaw);
+    if (isNaN(n)) {
+      fail(`Invalid max-pages: ${maxPagesRaw}`);
+      earlyExit(1, `Invalid max-pages: ${maxPagesRaw}`);
+    }
+    maxPages = n;
+  }
 
   console.log("");
   label("URL", url);
@@ -1092,32 +1186,42 @@ async function runClone(args: string[]) {
   // Deploy unless --no-deploy
   if (!values["no-deploy"]) {
     const config = resolveConfig(process.env);
+    if (values["session-key"]) config.sessionKey = values["session-key"];
+    if (values["wallet-address"]) config.walletAddress = values["wallet-address"];
     const ensName = values.ens || config.ensName;
     const isMainnet = !values.calibration;
 
     if (!hasStorageAuth(config)) {
       if (!process.stdin.isTTY) {
         fail("No Filecoin auth configured.");
-        info("Use --no-deploy to clone without deploying.");
+        info("Use --no-deploy to clone without deploying, or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS.");
         earlyExit(1, "No Filecoin auth configured.");
       }
+      const chain = values.calibration ? "calibration" : "mainnet";
+      const url = sessionKeySigningUrl(chain);
       console.log("");
-      info("No Filecoin auth found. Run 'nova config' to save your session key,");
-      info("or enter your Filecoin wallet key below (needs USDFC).");
+      info("No session key found. Create one in your browser:");
+      console.log("");
+      info(`  ${c.cyan}${url}${c.reset}`);
       console.log("");
       const { ask: askPrompt, close: closePrompt } = await import("./prompt.js");
-      const key = await askPrompt(promptLabel("Filecoin wallet private key:"));
-      closePrompt();
-      if (!key) {
-        fail("Cannot deploy without Filecoin auth.");
+      const sk = await askPrompt(promptLabel("Session key:"));
+      if (!sk) {
+        closePrompt();
+        fail("Cannot deploy without a session key.");
         info("Use --no-deploy to clone without deploying.");
-        earlyExit(1, "Cannot deploy without Filecoin auth.");
+        earlyExit(1, "Cannot deploy without a session key.");
       }
-      process.env.NOVA_PIN_KEY = key;
-      config.pinKey = key;
-
-      console.log("");
-      await setupFilecoinPinPayments(isMainnet);
+      const wa = await askPrompt(promptLabel("Wallet address:"));
+      closePrompt();
+      if (!wa) {
+        fail("Wallet address is required.");
+        earlyExit(1, "Wallet address is required.");
+      }
+      config.sessionKey = sk;
+      config.walletAddress = wa;
+      process.env.NOVA_SESSION_KEY = sk;
+      process.env.NOVA_WALLET_ADDRESS = wa;
     }
 
     console.log("");
@@ -1185,85 +1289,146 @@ async function runClone(args: string[]) {
   }
 }
 
-async function runConfig() {
-  if (!process.stdin.isTTY) {
-    fail("'nova config' requires an interactive terminal.");
-    info("In CI, use environment variables (NOVA_PIN_KEY, NOVA_ENS_KEY, etc.).");
-    earlyExit(1, "'nova config' requires an interactive terminal.");
+
+function isUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input) || /^[a-z0-9-]+\.[a-z]{2,}/i.test(input);
+}
+
+async function runDemo(args: string[]) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(`
+  ${c.cyan}${c.bold}nova demo${c.reset} ${c.dim}-- Try Nova instantly, no wallet needed${c.reset}
+
+  ${c.bold}Usage${c.reset}
+
+    ${c.cyan}nova demo${c.reset} <url>              Clone a website and deploy to calibnet
+    ${c.cyan}nova demo${c.reset} <path>             Deploy a directory to calibnet
+
+  ${c.bold}Options${c.reset}
+
+    ${c.cyan}--ens${c.reset} <name>                  ENS domain to update after deploy
+    ${c.cyan}--max-pages${c.reset} <n>              Max pages to crawl (default: 50)
+    ${c.cyan}--json${c.reset}                       Output result as JSON
+
+  ${c.bold}Examples${c.reset}
+
+    ${c.dim}$${c.reset} nova demo filoz.org
+    ${c.dim}$${c.reset} nova demo ./dist
+    ${c.dim}$${c.reset} nova demo filoz.org --ens mysite.eth
+    ${c.dim}$${c.reset} nova demo https://example.com --max-pages 10
+`);
+    earlyExit(0);
   }
 
-  const creds = readCredentials();
+  const { positionals: pos, values } = parseArgs({
+    args: args.slice(1),
+    options: {
+      ens: { type: "string" },
+      "max-pages": { type: "string" },
+      json: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
 
-  console.log("");
-  console.log(`  ${c.cyan}${c.bold}Nova Config${c.reset}`);
-  console.log(`  ${c.dim}Credentials stored in ${credentialsPath()}${c.reset}`);
-  console.log("");
-  info("Session key + wallet address is the preferred auth method (scoped, cannot move funds).");
-  info("Filecoin wallet key is a fallback for CI or when you don't have a session key.");
-  info("Press Enter to skip or keep current value. Enter 'clear' to remove.");
-  console.log("");
+  const jsonMode = values.json!;
+  if (jsonMode) muteConsole();
 
-  const sessionKey = await ask(promptLabel(`Session key${creds.sessionKey ? ` [${c.dim}configured${c.reset}]` : ""}:`));
-  if (sessionKey === "clear") {
-    delete creds.sessionKey;
-  } else if (sessionKey) {
-    creds.sessionKey = sessionKey;
-  }
+  banner();
 
-  const walletAddress = await ask(promptLabel(`Wallet address${creds.walletAddress ? ` [${creds.walletAddress}]` : ""}:`));
-  if (walletAddress === "clear") {
-    delete creds.walletAddress;
-  } else if (walletAddress) {
-    creds.walletAddress = walletAddress;
-  }
+  let input = pos[0];
 
-  const pinKey = await ask(promptLabel(`Filecoin wallet key${creds.pinKey ? ` [${c.dim}configured${c.reset}]` : ""} ${c.dim}(fallback)${c.reset}:`));
-  if (pinKey === "clear") {
-    delete creds.pinKey;
-  } else if (pinKey) {
-    creds.pinKey = pinKey;
-  }
-
-  const ensKey = await ask(promptLabel(`Ethereum wallet key${creds.ensKey ? ` [${c.dim}configured${c.reset}]` : ""}:`));
-  if (ensKey === "clear") {
-    delete creds.ensKey;
-  } else if (ensKey) {
-    creds.ensKey = ensKey;
-  }
-
-  const ensName = await ask(promptLabel(`Default ENS domain${creds.ensName ? ` [${creds.ensName}]` : ""}:`));
-  if (ensName === "clear") {
-    delete creds.ensName;
-  } else if (ensName) {
-    creds.ensName = ensName;
-  }
-
-  const providerId = await ask(promptLabel(`Provider ID${creds.providerId !== undefined ? ` [${creds.providerId}]` : ""}:`));
-  if (providerId === "clear") {
-    delete creds.providerId;
-  } else if (providerId) {
-    const n = Number(providerId);
-    if (isNaN(n)) {
-      fail("Invalid provider ID - must be a number.");
-      earlyExit(1, "Invalid provider ID.");
+  if (!input) {
+    if (!process.stdin.isTTY) {
+      fail("URL or path required.");
+      info("Usage: nova demo <url-or-path>");
+      earlyExit(1, "URL or path required.");
     }
-    creds.providerId = n;
+    console.log("");
+    const prompted = await ask(promptLabel("Website URL or directory to deploy:"));
+    if (!prompted) {
+      fail("URL or path required.");
+      earlyExit(1, "URL or path required.");
+    }
+    input = prompted;
   }
 
-  const rpcUrl = await ask(promptLabel(`Ethereum RPC URL${creds.rpcUrl ? ` [${c.dim}configured${c.reset}]` : ""}:`));
-  if (rpcUrl === "clear") {
-    delete creds.rpcUrl;
-  } else if (rpcUrl) {
-    creds.rpcUrl = rpcUrl;
+  const isUrlInput = isUrl(input);
+  let maxPages: number | undefined;
+  if (values["max-pages"]) {
+    const n = Number(values["max-pages"]);
+    if (isNaN(n)) {
+      fail(`Invalid max-pages: ${values["max-pages"]}`);
+      earlyExit(1, `Invalid max-pages: ${values["max-pages"]}`);
+    }
+    maxPages = n;
+  }
+
+  console.log("");
+  info(`${c.bold}Demo mode${c.reset} ${c.dim}-- free calibnet deploy, no wallet needed${c.reset}`);
+  console.log("");
+  if (isUrlInput) {
+    label("URL", input);
+  } else {
+    const resolved = resolvePath(input);
+    label("Path", resolved);
+    label("Size", formatSize(dirSize(resolved)));
+  }
+  label("Net", "calibration (demo)");
+  console.log("");
+
+  if (process.stdin.isTTY) {
+    const confirm = await ask(promptLabel(isUrlInput ? "Clone and deploy? [Y/n]" : "Deploy? [Y/n]"));
+    if (confirm && confirm.toLowerCase() !== "y" && confirm !== "") {
+      info("Cancelled.");
+      earlyExit(0);
+    }
   }
 
   close();
 
-  writeCredentials(creds);
+  const result = await demoDeploy(input, { maxPages });
 
-  console.log("");
-  success(`Saved to ${credentialsPath()}`);
-  console.log("");
+  if (jsonMode) {
+    unmuteConsole();
+    originalLog(JSON.stringify({
+      cid: result.cid,
+      gatewayUrl: result.gatewayUrl,
+      directory: result.directory,
+      sourceUrl: result.sourceUrl,
+      pages: result.pages,
+      network: "calibration",
+      demo: true,
+      ...(values.ens && { ensUpdateUrl: `https://ens.focify.eth.limo/?name=${encodeURIComponent(values.ens)}&cid=${encodeURIComponent(result.cid)}` }),
+    }));
+  } else {
+    // Ask about ENS after deploy
+    let ensName = values.ens;
+    if (!ensName && process.stdin.isTTY) {
+      // Re-open prompt (close() was called before deploy)
+      const { ask: askAgain, close: closeAgain } = await import("./prompt.js");
+      console.log("");
+      const ensInput = await askAgain(promptLabel("Point an ENS domain to this site? (leave blank to skip):"));
+      closeAgain();
+      if (ensInput && ensInput.trim()) {
+        ensName = ensInput.trim();
+      }
+    }
+
+    if (ensName) {
+      const ensUrl = `https://ens.focify.eth.limo/?name=${encodeURIComponent(ensName)}&cid=${encodeURIComponent(result.cid)}`;
+      console.log("");
+      info(`Point ${c.bold}${ensName}${c.reset} to your site:`);
+      console.log("");
+      info(`  ${c.cyan}${ensUrl}${c.reset}`);
+      console.log("");
+      info(`${c.dim}Open the link above and sign the transaction with your Ethereum wallet.${c.reset}`);
+    }
+    console.log("");
+    info(`${c.dim}This is a demo deploy on calibnet. For permanent hosting:${c.reset}`);
+    info(`${c.dim}1. Create a session key: ${c.cyan}https://session.focify.eth.limo${c.reset}`);
+    info(`${c.dim}2. Run: ${c.cyan}nova deploy${result.sourceUrl ? "" : " " + input}${c.reset}`);
+    console.log("");
+  }
 }
 
 async function main() {
@@ -1282,6 +1447,9 @@ async function main() {
   }
 
   switch (command) {
+    case "demo":
+      await runDemo(args);
+      break;
     case "deploy":
       await runDeploy(args);
       break;
@@ -1296,9 +1464,6 @@ async function main() {
       break;
     case "manage":
       await runManage(args);
-      break;
-    case "config":
-      await runConfig();
       break;
     default:
       fail(`Unknown command: ${command}`);

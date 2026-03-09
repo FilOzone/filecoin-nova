@@ -6,6 +6,16 @@ import { fromSecp256k1 } from "@filoz/synapse-core/session-key";
 import { privateKeyToAccount } from "viem/accounts";
 import { createClient, http } from "viem";
 import type { Hex, Address } from "viem";
+import { CID } from "multiformats/cid";
+
+/** Normalize a CID string to CIDv1 base32 for consistent comparison. */
+function toCidV1(cidStr: string): string {
+  try {
+    return CID.parse(cidStr).toV1().toString();
+  } catch {
+    return cidStr;
+  }
+}
 
 export interface PieceInfo {
   pieceId: bigint;
@@ -96,16 +106,40 @@ function pieceSizeBytes(pieceCid: string): number {
 /**
  * List all datasets and their pieces grouped by IPFS root CID.
  */
+function createReadClient(opts: StorageAuth & { mainnet: boolean }) {
+  const chain = opts.mainnet ? mainnet : calibration;
+  if (opts.sessionKey && opts.walletAddress) {
+    // For reads, use the root wallet as the account so eth_call `from`
+    // is an address that exists on-chain (session key address may not).
+    return createClient({ chain, transport: http(), account: opts.walletAddress as Address });
+  }
+  if (opts.pinKey) {
+    const account = privateKeyToAccount(ensureHexKey(opts.pinKey));
+    return createClient({ chain, transport: http(), account });
+  }
+  return createClient({ chain, transport: http() });
+}
+
 export async function listPieces(opts: StorageAuth & {
   mainnet: boolean;
 }): Promise<DataSetSummary[]> {
   const synapse = createSynapse(opts, opts.mainnet);
-  const warmStorage = new WarmStorageService({ client: synapse.client });
+  const readClient = createReadClient(opts);
+  const warmStorage = new WarmStorageService({ client: readClient as typeof synapse.client });
   const address = resolveWalletAddress(opts);
 
-  const datasets = await warmStorage.getClientDataSetsWithDetails({
-    address,
-  });
+  let datasets;
+  try {
+    datasets = await warmStorage.getClientDataSetsWithDetails({
+      address,
+    });
+  } catch (err: any) {
+    // "actor not found" means the wallet has never transacted on this network
+    if (err?.message?.includes("actor not found") || err?.details?.includes("actor not found")) {
+      return [];
+    }
+    throw err;
+  }
   if (datasets.length === 0) return [];
 
   const summaries: DataSetSummary[] = [];
@@ -292,17 +326,18 @@ export async function cleanPieces(opts: StorageAuth & {
   const keptCids: string[] = [];
 
   if (opts.removeCids && opts.removeCids.length > 0) {
-    // Explicit removal: remove only the specified CIDs
-    const removeSet = new Set(opts.removeCids);
-    for (const cid of removeSet) {
-      if (!target.groups.find((g) => g.ipfsRootCID === cid)) {
+    // Explicit removal: remove only the specified CIDs (normalize for v0/v1 comparison)
+    const removeSetV1 = new Set(opts.removeCids.map(toCidV1));
+    for (const cid of opts.removeCids) {
+      const cidV1 = toCidV1(cid);
+      if (!target.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1)) {
         throw new Error(
           `CID ${cid} not found in dataset ${target.dataSetId}.`,
         );
       }
     }
     for (const group of target.groups) {
-      if (removeSet.has(group.ipfsRootCID)) {
+      if (removeSetV1.has(toCidV1(group.ipfsRootCID))) {
         piecesToRemove.push(...group.pieces);
       } else {
         keptCids.push(group.ipfsRootCID);
@@ -310,12 +345,14 @@ export async function cleanPieces(opts: StorageAuth & {
     }
   } else {
     // Keep mode: keep specified CIDs (or latest), remove everything else
-    const keepSet = opts.keepCids && opts.keepCids.length > 0
-      ? new Set(opts.keepCids)
-      : new Set([target.groups[0].ipfsRootCID]);
+    const keepCidsRaw = opts.keepCids && opts.keepCids.length > 0
+      ? opts.keepCids
+      : [target.groups[0].ipfsRootCID];
+    const keepSetV1 = new Set(keepCidsRaw.map(toCidV1));
 
-    for (const cid of keepSet) {
-      if (!target.groups.find((g) => g.ipfsRootCID === cid)) {
+    for (const cid of keepCidsRaw) {
+      const cidV1 = toCidV1(cid);
+      if (!target.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1)) {
         throw new Error(
           `CID ${cid} not found in dataset ${target.dataSetId}.`,
         );
@@ -323,7 +360,7 @@ export async function cleanPieces(opts: StorageAuth & {
     }
 
     for (const group of target.groups) {
-      if (keepSet.has(group.ipfsRootCID)) {
+      if (keepSetV1.has(toCidV1(group.ipfsRootCID))) {
         keptCids.push(group.ipfsRootCID);
       } else {
         piecesToRemove.push(...group.pieces);

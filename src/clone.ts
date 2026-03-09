@@ -270,7 +270,16 @@ async function detectLocales(
  * 4. Rewrite CSS url() references (regex, standard for CSS)
  */
 export async function clone(config: CloneConfig): Promise<CloneResult> {
-  const playwright = await import("playwright");
+  let playwright;
+  try {
+    playwright = await import("playwright");
+  } catch {
+    throw new Error(
+      "Playwright is required for site cloning but is not installed.\n\n" +
+        "  Install it with: npm install -g playwright\n" +
+        "  Then install browsers: npx playwright install chromium"
+    );
+  }
   const maxPages = config.maxPages === 0 ? Infinity : (config.maxPages ?? 50);
   const takeScreenshots = config.screenshots === true;
 

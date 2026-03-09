@@ -98,12 +98,8 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
     process.env.NOVA_PIN_KEY = config.pinKey;
   }
 
-  if (config.ensName && !config.ensKey) {
-    throw new Error(
-      "Ethereum wallet key required for ENS updates.\n\n" +
-        "  Run 'nova config' to save your keys, or set NOVA_ENS_KEY env var."
-    );
-  }
+  // If ENS requested but no key, skip ENS step (caller handles browser signing flow)
+  const skipEns = !!(config.ensName && !config.ensKey);
 
   // 2. Resolve path, handle archives
   const resolvedPath = resolvePath(config.path);
@@ -128,7 +124,7 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
     }
 
     // 4. Deploy
-    const totalSteps = config.ensName ? 2 : 1;
+    const totalSteps = (config.ensName && !skipEns) ? 2 : 1;
     console.log("");
     step(1, totalSteps, "Deploying to Filecoin Onchain Cloud");
     console.log("");
@@ -147,8 +143,8 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
       directory: deployDir,
     };
 
-    // 5. ENS update (optional)
-    if (config.ensName && config.ensKey) {
+    // 5. ENS update (optional -- skipped if no key, caller handles browser signing)
+    if (config.ensName && config.ensKey && !skipEns) {
       console.log("");
       step(2, totalSteps, "Pointing ENS domain to website");
       console.log("");
