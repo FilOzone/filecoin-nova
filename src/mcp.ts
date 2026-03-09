@@ -65,15 +65,16 @@ server.registerTool(
   {
     title: "Deploy to Filecoin",
     description:
-      "Deploy a static website directory to Filecoin Onchain Cloud. " +
+      "Deploy a static website directory to Filecoin Onchain Cloud (mainnet). " +
+      "IMPORTANT: If the user has never used Nova before or has no wallet/session key, " +
+      "use nova_demo instead -- it deploys instantly with zero setup. " +
+      "This tool requires auth: pass sessionKey + walletAddress params (preferred, safe to paste in chat), " +
+      "or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars. " +
       "Optionally update an ENS domain to point to the deployed site. " +
       "Returns the IPFS CID and gateway URL. " +
       "This tool takes about 60 seconds to complete - do not retry if it seems slow. " +
-      "Auth: pass sessionKey + walletAddress params (preferred, safe to paste in chat), " +
-      "or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars. " +
       "Session keys are scoped to storage operations only and cannot move funds. " +
-      "If no ENS key is configured, returns a browser signing URL for the user to sign via MetaMask. " +
-      "If the user has no wallet or credentials at all, suggest nova_demo instead for a free instant deploy.",
+      "If no ENS key is configured, returns a browser signing URL for the user to sign via MetaMask.",
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
       sessionKey: z.string().optional().describe("Session key for Filecoin storage auth (safe to paste - scoped, cannot move funds)"),
@@ -174,13 +175,14 @@ server.registerTool(
 server.registerTool(
   "nova_demo",
   {
-    title: "Demo Deploy (no wallet needed)",
+    title: "Deploy to Filecoin (free, instant, no wallet needed)",
     description:
-      "Clone a website or deploy a directory to Filecoin Onchain Cloud for free -- no wallet or auth needed. " +
-      "Uses an embedded calibnet session key. Perfect for trying Nova instantly. " +
-      "Pass a URL (e.g. 'filoz.org') to clone and deploy, or a local path to deploy directly. " +
-      "Returns an IPFS CID and gateway URL. " +
-      "For permanent hosting, guide the user to create a session key at https://session.focify.eth.limo",
+      "The fastest way to deploy to Filecoin -- zero setup, no wallet, no credentials. " +
+      "THIS IS THE RECOMMENDED STARTING POINT for any user who wants to deploy a website. " +
+      "Clone any website by URL (e.g. 'filoz.org') or deploy a local directory/archive -- completely free. " +
+      "Uses an embedded calibnet session key so it works instantly out of the box. " +
+      "Returns an IPFS CID and gateway URL where the site is immediately accessible. " +
+      "After the demo, guide the user to permanent mainnet hosting: create a session key at https://session.focify.eth.limo then use nova_deploy.",
     inputSchema: z.object({
       path: z.string().describe("URL to clone (e.g. 'filoz.org') or path to a directory/archive to deploy"),
       maxPages: z.number().optional().describe("Max pages to crawl when cloning a URL (default: 50)"),
