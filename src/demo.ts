@@ -12,6 +12,7 @@ export const DEMO_NETWORK = "calibration";
 export interface DemoResult {
   cid: string;
   gatewayUrl: string;
+  dwebUrl: string;
   directory: string;
   cloned?: boolean;
   sourceUrl?: string;
@@ -33,7 +34,7 @@ function normalizeUrl(input: string): string {
  * Demo deploy: clone a URL or deploy a directory to calibnet.
  * No credentials needed.
  */
-export async function demoDeploy(input: string, opts?: { maxPages?: number }): Promise<DemoResult> {
+export async function demoDeploy(input: string, opts?: { maxPages?: number; providerId?: number }): Promise<DemoResult> {
   const { deploy } = await import("./deploy.js");
 
   let deployPath = input;
@@ -63,6 +64,7 @@ export async function demoDeploy(input: string, opts?: { maxPages?: number }): P
       sessionKey: DEMO_SESSION_KEY,
       walletAddress: DEMO_WALLET_ADDRESS,
       mainnet: false,
+      providerId: opts?.providerId,
     });
   } catch (err: any) {
     const msg = (err.message || "").toLowerCase();
@@ -79,7 +81,10 @@ export async function demoDeploy(input: string, opts?: { maxPages?: number }): P
 
   return {
     cid: result.cid,
-    gatewayUrl: `https://${result.cid}.ipfs.dweb.link/`,
+    gatewayUrl: result.cid.length <= 63
+      ? `https://${result.cid}.ipfs.gateway.focify.me/`
+      : `https://gateway.focify.me/ipfs/${result.cid}`,
+    dwebUrl: `https://${result.cid}.ipfs.dweb.link/`,
     directory: result.directory,
     cloned,
     sourceUrl,

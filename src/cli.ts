@@ -44,8 +44,10 @@ const originalLog = console.log;
 const originalError = console.error;
 function muteConsole() {
   isJsonMode = true;
-  console.log = () => {};
-  console.error = () => {};
+  // Redirect progress to stderr so JSON result is the only stdout output.
+  // Callers (like focify-me) can stream stderr for live progress.
+  console.log = (...args: unknown[]) => process.stderr.write(args.join(" ") + "\n");
+  console.error = (...args: unknown[]) => process.stderr.write(args.join(" ") + "\n");
 }
 function unmuteConsole() {
   console.log = originalLog;
@@ -1325,6 +1327,7 @@ async function runDemo(args: string[]) {
     options: {
       ens: { type: "string" },
       "max-pages": { type: "string" },
+      "provider-id": { type: "string" },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -1386,13 +1389,15 @@ async function runDemo(args: string[]) {
 
   close();
 
-  const result = await demoDeploy(input, { maxPages });
+  const providerId = values["provider-id"] ? Number(values["provider-id"]) : undefined;
+  const result = await demoDeploy(input, { maxPages, providerId });
 
   if (jsonMode) {
     unmuteConsole();
     originalLog(JSON.stringify({
       cid: result.cid,
       gatewayUrl: result.gatewayUrl,
+      dwebUrl: result.dwebUrl,
       directory: result.directory,
       sourceUrl: result.sourceUrl,
       pages: result.pages,

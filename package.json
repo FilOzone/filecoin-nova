@@ -23,6 +23,7 @@
     "node": ">=20.10.0"
   },
   "scripts": {
+    "postinstall": "npx playwright install-deps chromium 2>/dev/null || true",
     "build": "tsc && chmod +x dist/cli.js dist/mcp.js",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit",
