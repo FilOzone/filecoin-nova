@@ -12,7 +12,7 @@ import { ensSigningUrl, sessionKeySigningUrl } from "./signing-url.js";
 import { pollEnsContenthash, pollSessionKeyRegistered } from "./poll.js";
 import { listPieces, cleanPieces, type PieceInfo } from "./manage.js";
 import { ask, close } from "./prompt.js";
-import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize } from "./ui.js";
+import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize, link } from "./ui.js";
 import { CID } from "multiformats/cid";
 
 /** Normalize a CID string to CIDv1 base32 for consistent comparison. */
@@ -171,7 +171,7 @@ async function runDeploy(args: string[]) {
     console.log("");
     info("No session key found. Create one in your browser:");
     console.log("");
-    info(`  ${c.cyan}${url}${c.reset}`);
+    info(`  ${link(url)}`);
     console.log("");
     info("Connect your MetaMask wallet, sign the transaction, then paste the session key below.");
     console.log("");
@@ -275,7 +275,7 @@ async function runDeploy(args: string[]) {
     console.log("");
     info(`Sign the ENS update in your browser:`);
     console.log("");
-    info(`  ${c.cyan}${url}${c.reset}`);
+    info(`  ${link(url)}`);
     console.log("");
 
     if (process.stdin.isTTY && !jsonMode) {
@@ -567,7 +567,7 @@ async function runEns(args: string[]) {
     } else {
       info("Sign the ENS update in your browser:");
       console.log("");
-      info(`  ${c.cyan}${url}${c.reset}`);
+      info(`  ${link(url)}`);
       console.log("");
 
       if (process.stdin.isTTY) {
@@ -685,7 +685,7 @@ async function runManage(args: string[]) {
     console.log("");
     info("No session key found. Create one in your browser:");
     console.log("");
-    info(`  ${c.cyan}${url}${c.reset}`);
+    info(`  ${link(url)}`);
     console.log("");
     const sk = await ask(promptLabel("Session key:"));
     if (!sk) {
@@ -1204,7 +1204,7 @@ async function runClone(args: string[]) {
       console.log("");
       info("No session key found. Create one in your browser:");
       console.log("");
-      info(`  ${c.cyan}${url}${c.reset}`);
+      info(`  ${link(url)}`);
       console.log("");
       const { ask: askPrompt, close: closePrompt } = await import("./prompt.js");
       const sk = await askPrompt(promptLabel("Session key:"));
@@ -1238,6 +1238,43 @@ async function runClone(args: string[]) {
       providerId: values["provider-id"] ? Number(values["provider-id"]) : config.providerId,
       mainnet: isMainnet,
     });
+
+    // Post-deploy ENS via browser signing (when no ensKey)
+    if (ensName && !config.ensKey && !deployResult.txHash) {
+      const ensUrl = ensSigningUrl(ensName, deployResult.cid);
+      console.log("");
+      info(`Sign the ENS update in your browser:`);
+      console.log("");
+      info(`  ${link(ensUrl)}`);
+      console.log("");
+
+      if (process.stdin.isTTY && !jsonMode) {
+        info("Waiting for ENS contenthash update...");
+        const POLL_INTERVAL = 5_000;
+        const POLL_TIMEOUT = 300_000;
+        const start = Date.now();
+        let confirmed = false;
+        while (Date.now() - start < POLL_TIMEOUT) {
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+          const poll = await pollEnsContenthash(ensName, deployResult.cid, values["rpc-url"] || config.rpcUrl);
+          if (poll.confirmed) {
+            confirmed = true;
+            deployResult.ensName = ensName;
+            deployResult.ethLimoUrl = `https://${ensName.replace(/\.eth$/, "")}.eth.limo`;
+            success(`ENS updated: ${c.bold}${deployResult.ethLimoUrl}${c.reset}`);
+            break;
+          }
+          if (process.stderr.isTTY) {
+            const elapsed = Math.round((Date.now() - start) / 1000);
+            process.stderr.write(`\r  ${c.dim}Polling... ${elapsed}s${c.reset}`);
+          }
+        }
+        if (process.stderr.isTTY) process.stderr.write("\r\x1b[K");
+        if (!confirmed) {
+          info("ENS update not detected within 5 minutes. You can sign it later at the URL above.");
+        }
+      }
+    }
 
     // Post-deploy cleanup
     if (values.clean && hasStorageAuth(config)) {
@@ -1424,7 +1461,7 @@ async function runDemo(args: string[]) {
       console.log("");
       info(`Point ${c.bold}${ensName}${c.reset} to your site:`);
       console.log("");
-      info(`  ${c.cyan}${ensUrl}${c.reset}`);
+      info(`  ${link(ensUrl)}`);
       console.log("");
       info(`${c.dim}Open the link above and sign the transaction with your Ethereum wallet.${c.reset}`);
     }

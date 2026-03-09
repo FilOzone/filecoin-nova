@@ -113,3 +113,9 @@ export function formatSize(bytes: number): string {
 export function promptLabel(text: string) {
   return `  ${c.cyan}?${c.reset} ${text} `;
 }
+
+/** Wrap a URL in an OSC 8 terminal hyperlink so the entire URL is clickable. */
+export function link(url: string): string {
+  if (!process.stderr.isTTY) return url;
+  return `\x1b]8;;${url}\x1b\\${c.cyan}${url}${c.reset}\x1b]8;;\x1b\\`;
+}
