@@ -72,7 +72,8 @@ server.registerTool(
       "Auth: pass sessionKey + walletAddress params (preferred, safe to paste in chat), " +
       "or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars. " +
       "Session keys are scoped to storage operations only and cannot move funds. " +
-      "If no ENS key is configured, returns a browser signing URL for the user to sign via MetaMask.",
+      "If no ENS key is configured, returns a browser signing URL for the user to sign via MetaMask. " +
+      "If the user has no wallet or credentials at all, suggest nova_demo instead for a free instant deploy.",
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
       sessionKey: z.string().optional().describe("Session key for Filecoin storage auth (safe to paste - scoped, cannot move funds)"),
@@ -97,7 +98,7 @@ server.registerTool(
         if (!hasStorageAuth(authConfig)) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "No Filecoin auth found. Pass sessionKey + walletAddress params, or create a session key at https://session.focify.eth.limo" }],
+            content: [{ type: "text" as const, text: "No Filecoin auth found. Pass sessionKey + walletAddress params, or create a session key at https://session.focify.eth.limo\n\nTo try Nova instantly without any wallet, use the nova_demo tool instead." }],
           };
         }
 
