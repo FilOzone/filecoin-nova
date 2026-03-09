@@ -322,6 +322,13 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   // Track which URLs are HTML pages (for the rewrite step)
   const htmlPages = new Map<string, string>(); // originalUrl -> localPath
 
+  // Cross-origin API response cache -- captured during crawl, replayed on the clone.
+  // Frameworks (Nuxt, Next.js, React) re-fetch data after hydration. On IPFS the
+  // cross-origin API calls fail (CORS) and the framework wipes SSR content.  Caching
+  // the responses and injecting a fetch/XHR shim lets the framework hydrate with the
+  // original data -- animations, interactions, and content all work.
+  const apiResponseCache = new Map<string, { status: number; contentType: string; body: string }>();
+
   const queued = new Set<string>();
   const queue: string[] = [];
   const startUrl = canonicalUrl.origin + canonicalUrl.pathname.replace(/\/$/, "");
@@ -401,6 +408,12 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
     const page = await context.newPage();
     const pageAssets: { url: string; body: Buffer; contentType: string }[] = [];
     const pendingResponses: Promise<void>[] = [];
+    // We intentionally use page.content() (post-JS DOM) rather than the raw server
+    // response. SSR HTML from animation-heavy sites (GSAP, ScrollTrigger) contains
+    // opacity:0 / transform initial states and loader overlays. After the crawl scroll
+    // cycle triggers all animations, page.content() captures the final visible state.
+    // If JS crashes on the IPFS clone, elements stay visible because the saved HTML
+    // is already in the post-animation state.
 
     page.on("response", (response) => {
       const p = (async () => {
@@ -409,12 +422,31 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
           const status = response.status();
           if (status < 200 || status >= 400) return;
           if (url.startsWith("data:") || !url.startsWith("http")) return;
-          // Only capture responses from the site we're cloning.
-          // External assets referenced in our pages are handled by the deferred fetch.
-          if (!url.startsWith(canonicalOrigin)) return;
-          // Skip Cloudflare-injected scripts (challenge platform, email obfuscation, etc.)
-          if (url.includes("/cdn-cgi/")) return;
+
           const contentType = response.headers()["content-type"] || "";
+
+          // Cross-origin responses: cache API/data responses for replay on the clone
+          if (!url.startsWith(canonicalOrigin)) {
+            // Skip binary assets -- only cache data responses (JSON, text, XML)
+            if (
+              contentType.startsWith("image/") ||
+              contentType.startsWith("font/") ||
+              contentType.startsWith("video/") ||
+              contentType.startsWith("audio/") ||
+              contentType.includes("woff") ||
+              contentType.includes("octet-stream") ||
+              contentType.includes("javascript") ||
+              contentType.includes("css")
+            ) return;
+            if (apiResponseCache.has(url)) return;
+            const text = await response.text().catch(() => null);
+            if (text && text.length > 0) {
+              apiResponseCache.set(url, { status, contentType, body: text });
+            }
+            return;
+          }
+
+          // Same-origin responses: save as local assets
           // Skip streaming media -- browser may capture partial range responses.
           // The deferred fetch will get the full file via a clean GET request.
           if (contentType.startsWith("video/") || contentType.startsWith("audio/")) return;
@@ -442,7 +474,8 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         continue;
       }
 
-      // Scroll to trigger lazy-loaded content (IntersectionObserver)
+      // Scroll to trigger lazy content behind scroll event listeners,
+      // native loading="lazy", and IntersectionObserver-based lazy loaders
       const pageHeight = await page.evaluate(() => document.body.scrollHeight);
       for (let scrolled = 0; scrolled < pageHeight; scrolled += 900) {
         await page.mouse.wheel(0, 900);
@@ -560,30 +593,17 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
 
       // Save captured assets
       const pagePath = urlToLocalPath(currentUrl, canonicalOrigin);
-      let pageHtmlSaved = false;
-
       for (const asset of pageAssets) {
         const assetNoQuery = asset.url.split("?")[0];
         if (assetMap.has(asset.url) || assetMap.has(assetNoQuery)) continue;
 
+        // Skip page HTML from response body — we use page.content() below
         const isPageHtml = asset.contentType.includes("text/html") &&
           (asset.url === currentUrl || asset.url === currentUrl + "/" ||
            asset.url.replace(/\/$/, "") === currentUrl.replace(/\/$/, ""));
-
-        if (isPageHtml && !pageHtmlSaved) {
-          assetMap.set(asset.url, pagePath);
-          assetMap.set(currentUrl, pagePath);
-          assetMap.set(currentUrl + "/", pagePath);
-          const fullPath = join(outDir, pagePath);
-          mkdirSafe(dirname(fullPath));
-          writeFileSync(fullPath, asset.body);
-          htmlPages.set(currentUrl, pagePath);
-          pageHtmlSaved = true;
-          continue;
-        }
+        if (isPageHtml) continue;
 
         const localPath = urlToLocalPath(asset.url, canonicalOrigin);
-        // Store both with-query and without-query keys pointing to same file
         assetMap.set(asset.url, localPath);
         assetMap.set(assetNoQuery, localPath);
 
@@ -593,7 +613,10 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         assetCount++;
       }
 
-      if (!pageHtmlSaved) {
+      // Always use page.content() for HTML — captures the post-animation DOM
+      // (GSAP ScrollTrigger resolved, loader removed, all elements visible).
+      // The raw response body has opacity:0 initial states from SSR.
+      {
         const html = await page.content();
         const fullPath = join(outDir, pagePath);
         mkdirSafe(dirname(fullPath));
@@ -610,6 +633,10 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   }
 
   success(`Crawled ${visited.size} page(s), captured ${assetCount} asset(s)`);
+  if (apiResponseCache.size > 0) {
+    const totalBytes = [...apiResponseCache.values()].reduce((s, r) => s + r.body.length, 0);
+    info(`  Cached ${apiResponseCache.size} cross-origin API response(s) (${Math.round(totalBytes / 1024)}KB) for replay`);
+  }
   console.log("");
 
   // ── Safari asset discovery ──
@@ -823,6 +850,16 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
     (window as any).__novaAssetMap = map;
   }, lookupEntries);
 
+  // Serialize the API response cache for injection into each page
+  const apiCacheObj: Record<string, { status: number; contentType: string; body: string }> = {};
+  for (const [url, resp] of apiResponseCache) {
+    apiCacheObj[url] = resp;
+  }
+  const apiCacheJSON = JSON.stringify(apiCacheObj);
+  await rewritePage.evaluate((json: string) => {
+    (window as any).__novaApiCache = json;
+  }, apiCacheJSON);
+
   let rewriteCount = 0;
   const totalPages = htmlPages.size;
 
@@ -861,9 +898,9 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
           const map: Map<string, string> = (window as any).__novaAssetMap;
 
           // Remove SRI attributes that break when served from a different origin
-          for (const el of document.querySelectorAll("[integrity], [crossorigin], [nonce]")) {
+          // Keep crossorigin — stripping it causes credential mismatches for font/payload preloads
+          for (const el of document.querySelectorAll("[integrity], [nonce]")) {
             el.removeAttribute("integrity");
-            el.removeAttribute("crossorigin");
             el.removeAttribute("nonce");
           }
 
@@ -936,6 +973,45 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
           const ms = document.createElement("script");
           ms.textContent = `new MutationObserver(m=>m.forEach(r=>r.addedNodes.forEach(n=>{if(n.querySelectorAll)for(const v of n.querySelectorAll('video[autoplay]:not([muted])'))v.setAttribute('muted','')}))).observe(document.documentElement,{childList:true,subtree:true})`;
           document.head.prepend(ms);
+
+          // Inject API response cache -- frameworks (Nuxt, Next.js, React) re-fetch
+          // data on client render. On IPFS the cross-origin API calls fail (CORS).
+          // This shim replays the original responses captured during crawl so the
+          // framework renders with real data.
+          const cacheJSON: string = (window as any).__novaApiCache;
+          if (cacheJSON && cacheJSON !== "{}") {
+            const cs = document.createElement("script");
+            cs.textContent = `(function(){`
+              + `var c=${cacheJSON};`
+              + `var oF=window.fetch;`
+              + `window.fetch=function(){`
+              +   `var u=typeof arguments[0]==="string"?arguments[0]:(arguments[0]&&arguments[0].url)||"";`
+              +   `if(c[u]){var r=c[u];return Promise.resolve(new Response(r.body,{status:r.status,headers:{"content-type":r.contentType}}))}`
+              +   `if(u.startsWith("http")&&!u.startsWith(location.origin))return new Promise(function(){});`
+              +   `return oF.apply(this,arguments)};`
+              + `var oO=XMLHttpRequest.prototype.open;var oS=XMLHttpRequest.prototype.send;`
+              + `XMLHttpRequest.prototype.open=function(m,u){`
+              +   `this._nu=typeof u==="string"?u:"";this._nc=null;this._nb=false;`
+              +   `if(c[this._nu])this._nc=c[this._nu];`
+              +   `else if(this._nu.startsWith("http")&&!this._nu.startsWith(location.origin))this._nb=true;`
+              +   `return oO.apply(this,arguments)};`
+              + `XMLHttpRequest.prototype.send=function(){`
+              +   `if(this._nc){var r=this._nc,x=this;`
+              +     `Object.defineProperty(x,"status",{get:function(){return r.status}});`
+              +     `Object.defineProperty(x,"responseText",{get:function(){return r.body}});`
+              +     `Object.defineProperty(x,"response",{get:function(){return r.body}});`
+              +     `Object.defineProperty(x,"readyState",{get:function(){return 4}});`
+              +     `x.getResponseHeader=function(h){return h.toLowerCase()==="content-type"?r.contentType:null};`
+              +     `x.getAllResponseHeaders=function(){return"content-type: "+r.contentType+"\\r\\n"};`
+              +     `setTimeout(function(){x.dispatchEvent(new Event("readystatechange"));x.dispatchEvent(new Event("load"));x.dispatchEvent(new Event("loadend"))},0);`
+              +     `return}`
+              +   `if(this._nb)return;`
+              +   `return oS.apply(this,arguments)}`
+              + `})();`;
+            // Must be FIRST script in <head> so it patches fetch/XHR before any
+            // framework code executes
+            document.head.insertBefore(cs, document.head.firstChild);
+          }
 
           const doctype = document.doctype;
           const dt = doctype
