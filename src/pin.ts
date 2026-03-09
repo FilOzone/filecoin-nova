@@ -8,6 +8,8 @@ export interface PinConfig {
   directory: string;
   providerId?: number;
   mainnet?: boolean;
+  sessionKey?: string;
+  walletAddress?: string;
 }
 
 export interface PinResult {
@@ -210,14 +212,23 @@ export async function setupFilecoinPinPayments(
   }
 
   const env = { ...process.env };
-  if (env.NOVA_PIN_KEY) {
-    env.PRIVATE_KEY = env.NOVA_PIN_KEY;
-  }
-  if (!env.PRIVATE_KEY) {
-    throw new Error(
-      "No Filecoin wallet key configured.\n\n" +
-        "  Run 'nova config' to save your keys, or set NOVA_PIN_KEY env var."
-    );
+
+  // Session key auth takes priority over raw private key
+  if (env.NOVA_SESSION_KEY && env.NOVA_WALLET_ADDRESS) {
+    env.SESSION_KEY = env.NOVA_SESSION_KEY;
+    env.WALLET_ADDRESS = env.NOVA_WALLET_ADDRESS;
+    delete env.PRIVATE_KEY;
+  } else {
+    if (env.NOVA_PIN_KEY) {
+      env.PRIVATE_KEY = env.NOVA_PIN_KEY;
+    }
+    if (!env.PRIVATE_KEY) {
+      throw new Error(
+        "No Filecoin auth configured.\n\n" +
+          "  Run 'nova config' to save your session key or wallet key,\n" +
+          "  or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars."
+      );
+    }
   }
 
   try {
@@ -319,14 +330,27 @@ export async function pinToFoc(config: PinConfig): Promise<PinResult> {
   }
 
   const env = { ...process.env };
-  if (env.NOVA_PIN_KEY) {
-    env.PRIVATE_KEY = env.NOVA_PIN_KEY;
-  }
-  if (!env.PRIVATE_KEY) {
-    throw new Error(
-      "No Filecoin wallet key configured.\n\n" +
-        "  Run 'nova config' to save your keys, or set NOVA_PIN_KEY env var."
-    );
+
+  // Session key auth takes priority over raw private key
+  if (config.sessionKey && config.walletAddress) {
+    env.SESSION_KEY = config.sessionKey;
+    env.WALLET_ADDRESS = config.walletAddress;
+    delete env.PRIVATE_KEY;
+  } else if (env.NOVA_SESSION_KEY && env.NOVA_WALLET_ADDRESS) {
+    env.SESSION_KEY = env.NOVA_SESSION_KEY;
+    env.WALLET_ADDRESS = env.NOVA_WALLET_ADDRESS;
+    delete env.PRIVATE_KEY;
+  } else {
+    if (env.NOVA_PIN_KEY) {
+      env.PRIVATE_KEY = env.NOVA_PIN_KEY;
+    }
+    if (!env.PRIVATE_KEY) {
+      throw new Error(
+        "No Filecoin auth configured.\n\n" +
+          "  Run 'nova config' to save your session key or wallet key,\n" +
+          "  or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars."
+      );
+    }
   }
 
   try {

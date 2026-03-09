@@ -15,6 +15,8 @@ export interface DeployConfig {
   /** Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) */
   path: string;
   pinKey?: string;
+  sessionKey?: string;
+  walletAddress?: string;
   ensName?: string;
   ensKey?: string;
   rpcUrl?: string;
@@ -88,8 +90,11 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
     await ensureFilecoinPin();
   }
 
-  // Allow library callers to pass pinKey directly
-  if (config.pinKey) {
+  // Allow library callers to pass auth directly via env vars
+  if (config.sessionKey && config.walletAddress) {
+    process.env.NOVA_SESSION_KEY = config.sessionKey;
+    process.env.NOVA_WALLET_ADDRESS = config.walletAddress;
+  } else if (config.pinKey) {
     process.env.NOVA_PIN_KEY = config.pinKey;
   }
 
@@ -132,6 +137,8 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
       directory: deployDir,
       providerId: config.providerId,
       mainnet: config.mainnet,
+      sessionKey: config.sessionKey,
+      walletAddress: config.walletAddress,
     });
     success(`Done ${elapsed(t1)}`);
 

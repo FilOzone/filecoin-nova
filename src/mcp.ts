@@ -7,7 +7,7 @@ import * as z from "zod/v4";
 import { deploy } from "./deploy.js";
 import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
 import { listPieces, cleanPieces } from "./manage.js";
-import { resolveConfig } from "./config.js";
+import { resolveConfig, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
 import { CID } from "multiformats/cid";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -67,13 +67,14 @@ server.registerTool(
       "Optionally update an ENS domain to point to the deployed site. " +
       "Returns the IPFS CID and gateway URL. " +
       "This tool takes about 60 seconds to complete - do not retry if it seems slow. " +
-      "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
-      "Keys cannot be passed as parameters and must NEVER be requested in chat. " +
-      "Before calling, ask the user if they have run 'nova config' to save their Filecoin wallet key. " +
-      "If using ENS, they also need their Ethereum wallet key saved via 'nova config'. " +
-      "Do NOT call this tool without confirming credentials are set up first.",
+      "Auth: pass sessionKey + walletAddress params (preferred, safe to paste in chat), " +
+      "or have credentials saved via 'nova config', or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars. " +
+      "Session keys are scoped to storage operations only and cannot move funds. " +
+      "If using ENS, an Ethereum wallet key is also needed via 'nova config'.",
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
+      sessionKey: z.string().optional().describe("Session key for Filecoin storage auth (safe to paste - scoped, cannot move funds)"),
+      walletAddress: z.string().optional().describe("Wallet address that owns the session key"),
       ensName: z.string().optional().describe("ENS domain to point to the site (e.g. mysite.eth)"),
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
       providerId: z.number().optional().describe("Storage provider ID"),
@@ -86,20 +87,27 @@ server.registerTool(
       try {
         const config = resolveConfig(process.env);
 
-        if (!config.pinKey) {
+        // Tool params override config for session key auth
+        const sessionKey = params.sessionKey || config.sessionKey;
+        const walletAddress = params.walletAddress || config.walletAddress;
+        const authConfig = { ...config, sessionKey, walletAddress };
+
+        if (!hasStorageAuth(authConfig)) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "No Filecoin wallet key found. The user needs to run 'nova config' in their terminal to save their wallet key." }],
+            content: [{ type: "text" as const, text: "No Filecoin auth found. Pass sessionKey + walletAddress params, or have the user run 'nova config' in their terminal." }],
           };
         }
 
         const result = await deploy({
           path: params.path,
-          pinKey: config.pinKey,
+          pinKey: authConfig.pinKey,
+          sessionKey: authConfig.sessionKey,
+          walletAddress: authConfig.walletAddress,
           ensName: params.ensName,
-          ensKey: config.ensKey,
-          rpcUrl: params.rpcUrl || config.rpcUrl,
-          providerId: params.providerId ?? config.providerId,
+          ensKey: authConfig.ensKey,
+          rpcUrl: params.rpcUrl || authConfig.rpcUrl,
+          providerId: params.providerId ?? authConfig.providerId,
           mainnet: !params.calibration,
         });
 
@@ -116,7 +124,9 @@ server.registerTool(
         if (params.clean) {
           try {
             const cleanResult = await cleanPieces({
-              pinKey: config.pinKey,
+              pinKey: authConfig.pinKey,
+              sessionKey: authConfig.sessionKey,
+              walletAddress: authConfig.walletAddress,
               mainnet: !params.calibration,
               keepCids: [result.cid],
             });
@@ -254,11 +264,11 @@ server.registerTool(
         };
 
         // Add pin status if credentials are available
-        if (cid && config.pinKey) {
+        if (cid && hasStorageAuth(config)) {
           try {
             let cidV1: string;
             try { cidV1 = CID.parse(cid).toV1().toString(); } catch { cidV1 = cid; }
-            const summaries = await listPieces({ pinKey: config.pinKey, mainnet: true });
+            const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet: true });
             for (const ds of summaries) {
               const group = ds.groups.find((g) => {
                 try { return CID.parse(g.ipfsRootCID).toV1().toString() === cidV1; } catch { return g.ipfsRootCID === cid; }
@@ -306,9 +316,10 @@ server.registerTool(
       "Each group has 'activePieces' (not pending removal) and 'duplicateActivePieces' (active copies beyond the first - these are redundant and can be removed with nova_manage_clean). " +
       "Only 1 active piece per CID is needed. If duplicateActivePieces > 0, suggest cleanup. " +
       "Pieces with pendingRemoval=true are already scheduled for deletion. " +
-      "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
-      "Do NOT call without confirming credentials are set up first.",
+      "Auth: pass sessionKey + walletAddress params, or have credentials saved via 'nova config'.",
     inputSchema: z.object({
+      sessionKey: z.string().optional().describe("Session key for Filecoin storage auth (safe to paste - scoped, cannot move funds)"),
+      walletAddress: z.string().optional().describe("Wallet address that owns the session key"),
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
   },
@@ -316,16 +327,21 @@ server.registerTool(
     return redirectConsole(async () => {
       try {
         const config = resolveConfig(process.env);
+        const sessionKey = params.sessionKey || config.sessionKey;
+        const walletAddress = params.walletAddress || config.walletAddress;
+        const authConfig = { ...config, sessionKey, walletAddress };
 
-        if (!config.pinKey) {
+        if (!hasStorageAuth(authConfig)) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "No Filecoin wallet key found. The user needs to run 'nova config' in their terminal to save their wallet key." }],
+            content: [{ type: "text" as const, text: "No Filecoin auth found. Pass sessionKey + walletAddress params, or have the user run 'nova config' in their terminal." }],
           };
         }
 
         const summaries = await listPieces({
-          pinKey: config.pinKey,
+          pinKey: authConfig.pinKey,
+          sessionKey: authConfig.sessionKey,
+          walletAddress: authConfig.walletAddress,
           mainnet: !params.calibration,
         });
 
@@ -354,10 +370,11 @@ server.registerTool(
       "Use 'keepCids' to keep specific CIDs, or 'removeCids' to remove specific CIDs. " +
       "WARNING: This permanently deletes pieces. Always run nova_manage first to review. " +
       "Each piece requires a separate transaction - this may take a while for many pieces. " +
-      "IMPORTANT: Requires credentials set up beforehand via 'nova config' in the terminal. " +
-      "Do NOT call without confirming credentials are set up first. " +
+      "Auth: pass sessionKey + walletAddress params, or have credentials saved via 'nova config'. " +
       "ALWAYS confirm with the user before calling this tool.",
     inputSchema: z.object({
+      sessionKey: z.string().optional().describe("Session key for Filecoin storage auth (safe to paste - scoped, cannot move funds)"),
+      walletAddress: z.string().optional().describe("Wallet address that owns the session key"),
       keepCids: z.string().optional().describe("Comma-separated CIDs to keep (removes everything else)"),
       removeCids: z.string().optional().describe("Comma-separated CIDs to remove (keeps everything else)"),
       keepCopies: z.boolean().optional().describe("Keep all copies of the same content (default: false, duplicates are removed)"),
@@ -369,11 +386,14 @@ server.registerTool(
     return redirectConsole(async () => {
       try {
         const config = resolveConfig(process.env);
+        const sessionKey = params.sessionKey || config.sessionKey;
+        const walletAddress = params.walletAddress || config.walletAddress;
+        const authConfig = { ...config, sessionKey, walletAddress };
 
-        if (!config.pinKey) {
+        if (!hasStorageAuth(authConfig)) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "No Filecoin wallet key found. The user needs to run 'nova config' in their terminal to save their wallet key." }],
+            content: [{ type: "text" as const, text: "No Filecoin auth found. Pass sessionKey + walletAddress params, or have the user run 'nova config' in their terminal." }],
           };
         }
 
@@ -388,7 +408,9 @@ server.registerTool(
         const removeCids = params.removeCids ? params.removeCids.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
 
         const result = await cleanPieces({
-          pinKey: config.pinKey,
+          pinKey: authConfig.pinKey,
+          sessionKey: authConfig.sessionKey,
+          walletAddress: authConfig.walletAddress,
           mainnet: !params.calibration,
           keepCids,
           removeCids,

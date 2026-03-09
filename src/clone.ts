@@ -366,6 +366,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
           } catch {}
         }
 
+        const childSitemapSet = new Set(childSitemapUrls.map(u => u.replace(/\/+$/, "")));
         let sitemapCount = 0;
         for (const xml of xmlTexts) {
           const locMatches = xml.match(/<loc>(.*?)<\/loc>/g) || [];
@@ -374,6 +375,8 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
             // Normalize double slashes in path (common sitemap quirk)
             url = url.replace(/([^:])\/\//g, "$1/");
             const normalized = url.replace(/\/+$/, "");
+            // Skip child sitemap URLs -- they were already fetched for parsing, not pages
+            if (childSitemapSet.has(normalized)) continue;
             if (normalized.startsWith(canonicalOrigin) && !queued.has(normalized)) {
               queue.push(normalized);
               queued.add(normalized);
@@ -390,6 +393,14 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
       }
     }
   } catch {}
+
+  // Sort queue by URL path depth so top-level pages are crawled first
+  // (sitemaps often list blog posts before main pages like /build/ or /store/)
+  queue.sort((a, b) => {
+    const depthA = new URL(a).pathname.replace(/\/+$/, "").split("/").filter(Boolean).length;
+    const depthB = new URL(b).pathname.replace(/\/+$/, "").split("/").filter(Boolean).length;
+    return depthA - depthB;
+  });
 
   // ── Step 1: Crawl pages and intercept all network traffic ──
   step(1, totalSteps, "Crawling and capturing assets");
@@ -476,7 +487,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
 
       // Scroll to trigger lazy content behind scroll event listeners,
       // native loading="lazy", and IntersectionObserver-based lazy loaders
-      const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+      const pageHeight = await page.evaluate(() => document.body?.scrollHeight ?? 0);
       for (let scrolled = 0; scrolled < pageHeight; scrolled += 900) {
         await page.mouse.wheel(0, 900);
       }
@@ -597,11 +608,23 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         const assetNoQuery = asset.url.split("?")[0];
         if (assetMap.has(asset.url) || assetMap.has(assetNoQuery)) continue;
 
-        // Skip page HTML from response body — we use page.content() below
+        // Save page HTML from the raw server response (not page.content()).
+        // Raw SSR HTML has no inline animation styles -- JS animations run
+        // cleanly on the clone.  page.content() captures mid-animation state
+        // (opacity:0, transform:translate) that bakes broken styles into the HTML.
         const isPageHtml = asset.contentType.includes("text/html") &&
           (asset.url === currentUrl || asset.url === currentUrl + "/" ||
            asset.url.replace(/\/$/, "") === currentUrl.replace(/\/$/, ""));
-        if (isPageHtml) continue;
+        if (isPageHtml) {
+          assetMap.set(asset.url, pagePath);
+          assetMap.set(currentUrl, pagePath);
+          assetMap.set(currentUrl + "/", pagePath);
+          const fullPath = join(outDir, pagePath);
+          mkdirSafe(dirname(fullPath));
+          writeFileSync(fullPath, asset.body);
+          htmlPages.set(currentUrl, pagePath);
+          continue;
+        }
 
         const localPath = urlToLocalPath(asset.url, canonicalOrigin);
         assetMap.set(asset.url, localPath);
@@ -613,10 +636,9 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         assetCount++;
       }
 
-      // Always use page.content() for HTML — captures the post-animation DOM
-      // (GSAP ScrollTrigger resolved, loader removed, all elements visible).
-      // The raw response body has opacity:0 initial states from SSR.
-      {
+      // Fallback: if the raw response wasn't captured (e.g. redirect, SPA),
+      // use page.content() as a last resort.
+      if (!htmlPages.has(currentUrl)) {
         const html = await page.content();
         const fullPath = join(outDir, pagePath);
         mkdirSafe(dirname(fullPath));
@@ -985,9 +1007,13 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
           // framework renders with real data.
           const cacheJSON: string = (window as any).__novaApiCache;
           if (cacheJSON && cacheJSON !== "{}") {
+            // Escape </script inside JSON so the HTML parser doesn't
+            // prematurely close the <script> tag (e.g. YouTube embeds
+            // contain full HTML documents with </script> tags).
+            const safeCacheJSON = cacheJSON.replace(/<\/script/gi, "<\\/script");
             const cs = document.createElement("script");
             cs.textContent = `(function(){`
-              + `var c=${cacheJSON};`
+              + `var c=${safeCacheJSON};`
               + `var oF=window.fetch;`
               + `window.fetch=function(){`
               +   `var u=typeof arguments[0]==="string"?arguments[0]:(arguments[0]&&arguments[0].url)||"";`
@@ -1140,7 +1166,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         await page.waitForLoadState("networkidle").catch(() => {});
 
         // Scroll to trigger lazy-load and scroll-based animations
-        const cloneHeight = await page.evaluate(() => document.body.scrollHeight);
+        const cloneHeight = await page.evaluate(() => document.body?.scrollHeight ?? 0);
         for (let scrolled = 0; scrolled < cloneHeight; scrolled += 900) {
           await page.mouse.wheel(0, 900);
         }

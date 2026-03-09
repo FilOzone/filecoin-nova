@@ -2,9 +2,10 @@ import { Synapse, mainnet, calibration } from "@filoz/synapse-sdk";
 import { WarmStorageService } from "@filoz/synapse-sdk/warm-storage";
 import { StorageContext } from "@filoz/synapse-sdk/storage";
 import { getSizeFromPieceCID } from "@filoz/synapse-core/piece";
+import { fromSecp256k1 } from "@filoz/synapse-core/session-key";
 import { privateKeyToAccount } from "viem/accounts";
-import { http } from "viem";
-import type { Hex } from "viem";
+import { createClient, http } from "viem";
+import type { Hex, Address } from "viem";
 
 export interface PieceInfo {
   pieceId: bigint;
@@ -36,14 +37,51 @@ export interface DataSetSummary {
   pendingRemovalCount: number;
 }
 
+export interface StorageAuth {
+  pinKey?: string;
+  sessionKey?: string;
+  walletAddress?: string;
+}
+
 function ensureHexKey(key: string): Hex {
   return key.startsWith("0x") ? (key as Hex) : (`0x${key}` as Hex);
 }
 
-function createSynapse(pinKey: string, isMainnet: boolean) {
+function resolveWalletAddress(auth: StorageAuth): Address {
+  if (auth.sessionKey && auth.walletAddress) {
+    return auth.walletAddress as Address;
+  }
+  if (auth.pinKey) {
+    return privateKeyToAccount(ensureHexKey(auth.pinKey)).address;
+  }
+  throw new Error("No Filecoin auth configured.");
+}
+
+function createSynapse(auth: StorageAuth, isMainnet: boolean) {
   const chain = isMainnet ? mainnet : calibration;
-  const account = privateKeyToAccount(ensureHexKey(pinKey));
-  return Synapse.create({ account, chain, transport: http() });
+
+  if (auth.sessionKey && auth.walletAddress) {
+    const sessionKeyObj = fromSecp256k1({
+      privateKey: ensureHexKey(auth.sessionKey),
+      root: auth.walletAddress as Address,
+      chain,
+    });
+    // Session key client acts as both the main client (for reads) and session client (for writes).
+    // The root wallet address is embedded in the session key account's rootAddress field.
+    const client = createClient({
+      chain,
+      transport: http(),
+      account: sessionKeyObj.account,
+    });
+    return new Synapse({ client, sessionClient: sessionKeyObj.client });
+  }
+
+  if (auth.pinKey) {
+    const account = privateKeyToAccount(ensureHexKey(auth.pinKey));
+    return Synapse.create({ account, chain, transport: http() });
+  }
+
+  throw new Error("No Filecoin auth configured.");
 }
 
 function pieceSizeBytes(pieceCid: string): number {
@@ -58,13 +96,12 @@ function pieceSizeBytes(pieceCid: string): number {
 /**
  * List all datasets and their pieces grouped by IPFS root CID.
  */
-export async function listPieces(opts: {
-  pinKey: string;
+export async function listPieces(opts: StorageAuth & {
   mainnet: boolean;
 }): Promise<DataSetSummary[]> {
-  const synapse = createSynapse(opts.pinKey, opts.mainnet);
+  const synapse = createSynapse(opts, opts.mainnet);
   const warmStorage = new WarmStorageService({ client: synapse.client });
-  const address = privateKeyToAccount(ensureHexKey(opts.pinKey)).address;
+  const address = resolveWalletAddress(opts);
 
   const datasets = await warmStorage.getClientDataSetsWithDetails({
     address,
@@ -213,8 +250,7 @@ export async function listPieces(opts: {
  * - keepCid: keep this CID, remove everything else (default: keep latest)
  * - keepCopies: if false (default), also remove duplicate pieces within kept CIDs
  */
-export async function cleanPieces(opts: {
-  pinKey: string;
+export async function cleanPieces(opts: StorageAuth & {
   mainnet: boolean;
   keepCids?: string[];
   removeCids?: string[];
@@ -224,6 +260,8 @@ export async function cleanPieces(opts: {
 }): Promise<{ removed: number; txHashes: string[]; keptCid: string; keptCids: string[]; failed: number; error?: string }> {
   const summaries = await listPieces({
     pinKey: opts.pinKey,
+    sessionKey: opts.sessionKey,
+    walletAddress: opts.walletAddress,
     mainnet: opts.mainnet,
   });
 
@@ -315,7 +353,7 @@ export async function cleanPieces(opts: {
   }
 
   // Create StorageContext for the target dataset to perform deletions
-  const synapse = createSynapse(opts.pinKey, opts.mainnet);
+  const synapse = createSynapse(opts, opts.mainnet);
   const warmStorage = new WarmStorageService({ client: synapse.client });
 
   const ctx = await StorageContext.create({

@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { deploy, dirSize } from "./deploy.js";
 import { getEnsContenthash, updateEnsContenthash } from "./ens.js";
 import { setupFilecoinPinPayments } from "./pin.js";
-import { resolveConfig, readCredentials, writeCredentials, credentialsPath } from "./config.js";
+import { resolveConfig, readCredentials, writeCredentials, credentialsPath, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
 import { listPieces, cleanPieces, type PieceInfo } from "./manage.js";
 import { ask, close } from "./prompt.js";
 import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize } from "./ui.js";
@@ -70,7 +70,9 @@ const HELP = `
 
   ${c.bold}Environment Variables${c.reset}
 
-    ${c.cyan}NOVA_PIN_KEY${c.reset}         Filecoin wallet key (for deploying to FOC)
+    ${c.cyan}NOVA_SESSION_KEY${c.reset}     Session key for storage auth (preferred, scoped)
+    ${c.cyan}NOVA_WALLET_ADDRESS${c.reset}  Wallet address for session key auth
+    ${c.cyan}NOVA_PIN_KEY${c.reset}         Filecoin wallet private key (fallback for CI)
     ${c.cyan}NOVA_ENS_KEY${c.reset}         Ethereum wallet key (for ENS updates)
     ${c.cyan}NOVA_ENS_NAME${c.reset}        ENS domain (e.g. desite.ezpdpz.eth)
     ${c.cyan}NOVA_RPC_URL${c.reset}         Ethereum RPC URL (override default RPCs)
@@ -148,22 +150,22 @@ async function runDeploy(args: string[]) {
   let directory: string | undefined = pos[0];
   let ensName = values.ens || config.ensName;
 
-  // 1. Filecoin wallet key
-  if (!config.pinKey) {
+  // 1. Filecoin auth (session key preferred, raw key fallback)
+  if (!hasStorageAuth(config)) {
     if (!process.stdin.isTTY) {
-      fail("NOVA_PIN_KEY env var is required.");
-      info("Set it to your Filecoin wallet private key (needs USDFC).");
-      earlyExit(1, "NOVA_PIN_KEY env var is required.");
+      fail("No Filecoin auth configured.");
+      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS, or NOVA_PIN_KEY env var.");
+      earlyExit(1, "No Filecoin auth configured.");
     }
     console.log("");
-    info("NOVA_PIN_KEY not set. Run 'nova config' to save your keys,");
+    info("No Filecoin auth found. Run 'nova config' to save your session key,");
     info("or enter your Filecoin wallet key below (needs USDFC).");
     console.log("");
     const key = await ask(promptLabel("Filecoin wallet private key:"));
     if (!key) {
-      fail("Cannot deploy without a Filecoin wallet key.");
-      info("Set NOVA_PIN_KEY env var and try again.");
-      earlyExit(1, "Cannot deploy without a Filecoin wallet key.");
+      fail("Cannot deploy without Filecoin auth.");
+      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS, or NOVA_PIN_KEY.");
+      earlyExit(1, "Cannot deploy without Filecoin auth.");
     }
     process.env.NOVA_PIN_KEY = key;
     config.pinKey = key;
@@ -261,6 +263,8 @@ async function runDeploy(args: string[]) {
   const result = await deploy({
     path: directory,
     pinKey: config.pinKey,
+    sessionKey: config.sessionKey,
+    walletAddress: config.walletAddress,
     ensName,
     ensKey: config.ensKey,
     rpcUrl: values["rpc-url"] || config.rpcUrl,
@@ -270,7 +274,7 @@ async function runDeploy(args: string[]) {
 
   // Post-deploy cleanup
   let cleanedResult: { removed: number; failed: number; keptCids: string[]; error?: string } | undefined;
-  if (cleanAfterDeploy && config.pinKey) {
+  if (cleanAfterDeploy && hasStorageAuth(config)) {
     if (!jsonMode) {
       console.log("");
       info("Cleaning up old pieces...");
@@ -279,6 +283,8 @@ async function runDeploy(args: string[]) {
     try {
       const cleanResult = await cleanPieces({
         pinKey: config.pinKey,
+        sessionKey: config.sessionKey,
+        walletAddress: config.walletAddress,
         mainnet: isMainnet,
         keepCids: [result.cid],
       });
@@ -368,10 +374,10 @@ async function runStatus(args: string[]) {
 
   // Check pin status if we have credentials and a CID
   let pinStatus: { totalPieces: number; activePieces: number; pendingRemoval: number } | null = null;
-  if (cid && config.pinKey) {
+  if (cid && hasStorageAuth(config)) {
     try {
       const cidV1 = toCidV1(cid);
-      const summaries = await listPieces({ pinKey: config.pinKey, mainnet: true });
+      const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet: true });
       for (const ds of summaries) {
         const group = ds.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1);
         if (group) {
@@ -594,19 +600,20 @@ async function runManage(args: string[]) {
   const config = resolveConfig(process.env);
   const mainnet = !values.calibration;
 
-  if (!config.pinKey) {
+  if (!hasStorageAuth(config)) {
     if (!process.stdin.isTTY) {
-      fail("NOVA_PIN_KEY env var is required.");
-      earlyExit(1, "NOVA_PIN_KEY env var is required.");
+      fail("No Filecoin auth configured.");
+      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS, or NOVA_PIN_KEY env var.");
+      earlyExit(1, "No Filecoin auth configured.");
     }
     console.log("");
-    info("NOVA_PIN_KEY not set. Run 'nova config' to save your keys,");
+    info("No Filecoin auth found. Run 'nova config' to save your session key,");
     info("or enter your Filecoin wallet key below.");
     console.log("");
     const key = await ask(promptLabel("Filecoin wallet private key:"));
     if (!key) {
-      fail("Cannot manage without a Filecoin wallet key.");
-      earlyExit(1, "Cannot manage without a Filecoin wallet key.");
+      fail("Cannot manage without Filecoin auth.");
+      earlyExit(1, "Cannot manage without Filecoin auth.");
     }
     config.pinKey = key;
   }
@@ -619,7 +626,7 @@ async function runManage(args: string[]) {
     info(`Querying ${mainnet ? "mainnet" : "calibration"}...`);
     console.log("");
 
-    const summaries = await listPieces({ pinKey: config.pinKey, mainnet });
+    const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet });
 
     if (summaries.length === 0) {
       if (jsonMode) {
@@ -746,7 +753,7 @@ async function runManage(args: string[]) {
     info(`Scanning ${mainnet ? "mainnet" : "calibration"}...`);
     console.log("");
 
-    const summaries = await listPieces({ pinKey: config.pinKey, mainnet });
+    const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet });
     if (summaries.length === 0) {
       info("No datasets found for this wallet.");
       return;
@@ -926,6 +933,8 @@ async function runManage(args: string[]) {
     info(`Removing ${totalToRemove} piece(s) - each requires a separate transaction, this may take a while...`);
     const result = await cleanPieces({
       pinKey: config.pinKey,
+      sessionKey: config.sessionKey,
+      walletAddress: config.walletAddress,
       mainnet,
       keepCids: hasKeepFlag ? keepCids : undefined,
       removeCids: hasRemoveFlag ? removeCids : undefined,
@@ -1086,23 +1095,23 @@ async function runClone(args: string[]) {
     const ensName = values.ens || config.ensName;
     const isMainnet = !values.calibration;
 
-    if (!config.pinKey) {
+    if (!hasStorageAuth(config)) {
       if (!process.stdin.isTTY) {
-        fail("NOVA_PIN_KEY env var is required to deploy.");
+        fail("No Filecoin auth configured.");
         info("Use --no-deploy to clone without deploying.");
-        earlyExit(1, "NOVA_PIN_KEY env var is required.");
+        earlyExit(1, "No Filecoin auth configured.");
       }
       console.log("");
-      info("NOVA_PIN_KEY not set. Run 'nova config' to save your keys,");
+      info("No Filecoin auth found. Run 'nova config' to save your session key,");
       info("or enter your Filecoin wallet key below (needs USDFC).");
       console.log("");
       const { ask: askPrompt, close: closePrompt } = await import("./prompt.js");
       const key = await askPrompt(promptLabel("Filecoin wallet private key:"));
       closePrompt();
       if (!key) {
-        fail("Cannot deploy without a Filecoin wallet key.");
+        fail("Cannot deploy without Filecoin auth.");
         info("Use --no-deploy to clone without deploying.");
-        earlyExit(1, "Cannot deploy without a Filecoin wallet key.");
+        earlyExit(1, "Cannot deploy without Filecoin auth.");
       }
       process.env.NOVA_PIN_KEY = key;
       config.pinKey = key;
@@ -1115,6 +1124,8 @@ async function runClone(args: string[]) {
     const deployResult = await deploy({
       path: cloneResult.directory,
       pinKey: config.pinKey,
+      sessionKey: config.sessionKey,
+      walletAddress: config.walletAddress,
       ensName,
       ensKey: config.ensKey,
       rpcUrl: values["rpc-url"] || config.rpcUrl,
@@ -1123,12 +1134,14 @@ async function runClone(args: string[]) {
     });
 
     // Post-deploy cleanup
-    if (values.clean && config.pinKey) {
+    if (values.clean && hasStorageAuth(config)) {
       console.log("");
       info("Cleaning up old pieces...");
       try {
         const cleanResult = await cleanPieces({
           pinKey: config.pinKey,
+          sessionKey: config.sessionKey,
+          walletAddress: config.walletAddress,
           mainnet: isMainnet,
           keepCids: [deployResult.cid],
         });
@@ -1185,11 +1198,26 @@ async function runConfig() {
   console.log(`  ${c.cyan}${c.bold}Nova Config${c.reset}`);
   console.log(`  ${c.dim}Credentials stored in ${credentialsPath()}${c.reset}`);
   console.log("");
-  info("Only the Filecoin wallet key is needed to deploy. The rest are optional.");
+  info("Session key + wallet address is the preferred auth method (scoped, cannot move funds).");
+  info("Filecoin wallet key is a fallback for CI or when you don't have a session key.");
   info("Press Enter to skip or keep current value. Enter 'clear' to remove.");
   console.log("");
 
-  const pinKey = await ask(promptLabel(`Filecoin wallet key${creds.pinKey ? ` [${c.dim}configured${c.reset}]` : ""}:`));
+  const sessionKey = await ask(promptLabel(`Session key${creds.sessionKey ? ` [${c.dim}configured${c.reset}]` : ""}:`));
+  if (sessionKey === "clear") {
+    delete creds.sessionKey;
+  } else if (sessionKey) {
+    creds.sessionKey = sessionKey;
+  }
+
+  const walletAddress = await ask(promptLabel(`Wallet address${creds.walletAddress ? ` [${creds.walletAddress}]` : ""}:`));
+  if (walletAddress === "clear") {
+    delete creds.walletAddress;
+  } else if (walletAddress) {
+    creds.walletAddress = walletAddress;
+  }
+
+  const pinKey = await ask(promptLabel(`Filecoin wallet key${creds.pinKey ? ` [${c.dim}configured${c.reset}]` : ""} ${c.dim}(fallback)${c.reset}:`));
   if (pinKey === "clear") {
     delete creds.pinKey;
   } else if (pinKey) {
