@@ -16,7 +16,8 @@
     "nova-mcp": "./dist/mcp.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "SKILL.md"
   ],
   "engines": {
     "node": ">=20.10.0"
