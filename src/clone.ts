@@ -897,10 +897,12 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         (prefix: string) => {
           const map: Map<string, string> = (window as any).__novaAssetMap;
 
-          // Remove SRI attributes that break when served from a different origin
-          // Keep crossorigin — stripping it causes credential mismatches for font/payload preloads
-          for (const el of document.querySelectorAll("[integrity], [nonce]")) {
+          // Remove SRI and crossorigin attributes that break when served from a different origin.
+          // crossorigin="anonymous" triggers CORS for images loaded from external CDNs (e.g.
+          // Sanity) — the CDN rejects the IPFS gateway origin and images fail to load.
+          for (const el of document.querySelectorAll("[integrity], [crossorigin], [nonce]")) {
             el.removeAttribute("integrity");
+            el.removeAttribute("crossorigin");
             el.removeAttribute("nonce");
           }
 
@@ -967,11 +969,14 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
 
           document.querySelector("base")?.remove();
 
-          // Add muted attribute to dynamically-created autoplay videos.
-          // React/Vue set muted via JS property, not HTML attribute;
-          // Safari blocks autoplay without the attribute.
+          // MutationObserver for dynamically-created elements:
+          // 1. Video muted: React/Vue set muted via JS property, not HTML attribute;
+          //    Safari blocks autoplay without it.
+          // 2. Image crossorigin: frameworks re-add crossorigin="anonymous" during
+          //    hydration, triggering CORS for external CDN images (e.g. Sanity).
+          //    Stripping it lets the browser load images without CORS.
           const ms = document.createElement("script");
-          ms.textContent = `new MutationObserver(m=>m.forEach(r=>r.addedNodes.forEach(n=>{if(n.querySelectorAll)for(const v of n.querySelectorAll('video[autoplay]:not([muted])'))v.setAttribute('muted','')}))).observe(document.documentElement,{childList:true,subtree:true})`;
+          ms.textContent = `new MutationObserver(m=>m.forEach(r=>r.addedNodes.forEach(n=>{if(n.querySelectorAll){for(const v of n.querySelectorAll('video[autoplay]:not([muted])'))v.setAttribute('muted','');for(const i of n.querySelectorAll('img[crossorigin]'))i.removeAttribute('crossorigin')}}))).observe(document.documentElement,{childList:true,subtree:true})`;
           document.head.prepend(ms);
 
           // Inject API response cache -- frameworks (Nuxt, Next.js, React) re-fetch
