@@ -1,54 +1,59 @@
 # Filecoin Nova
 
-Clone any website and put it on the Filecoin network in one command. No wallet, no setup, completely free.
+Take your website decentralized. Nova creates an exact static copy of your site and deploys it to the Filecoin network in seconds -- no server migration, no infrastructure changes.
 
 ```bash
-npx filecoin-nova demo https://example.com
+npx filecoin-nova demo https://your-site.com
 ```
 
-Nova crawls the site with a headless browser, captures every page and asset, deploys it to [Filecoin Onchain Cloud](https://filecoin.cloud), and gives you a live URL. The result is an exact clone hosted on decentralized infrastructure.
+Your site gets a permanent, censorship-resistant copy on [Filecoin Onchain Cloud](https://filecoin.cloud) with a live URL. Keep your existing hosting, or replace it entirely.
+
+- **One command** -- point Nova at your site and it handles everything
+- **No migration** -- your existing site stays exactly as it is
+- **Under $0.10/month** -- a fraction of traditional hosting costs
+- **No servers to manage** -- content is stored onchain, served via IPFS gateways
+- **Works with any site** -- static sites, React, Next.js, Vue, Nuxt, WordPress, Webflow
+- **ENS domains** -- give your decentralized site a human-readable `.eth.limo` address
 
 ---
 
 ## Try It Now
 
-```bash
-npx filecoin-nova demo https://your-favorite-site.com
-```
-
-That's it. No account, no wallet, no API keys. Your cloned site is live in about 60 seconds at an IPFS gateway URL like `https://bafybei....ipfs.dweb.link`.
-
-You can also deploy a local directory:
+See what your site looks like on decentralized infrastructure. No account, no wallet, no cost.
 
 ```bash
-npx filecoin-nova demo ./my-site
+npx filecoin-nova demo https://your-site.com
 ```
 
-Demo mode uses a free calibration testnet. When you're ready for permanent hosting, Nova walks you through the upgrade.
+Your site is live in about 60 seconds at an IPFS gateway URL. This free demo uses the calibration testnet so you can evaluate before committing.
+
+You can also deploy a local build directory:
+
+```bash
+npx filecoin-nova demo ./dist
+```
 
 ---
 
-## Clone a Website
+## Make Your Site Decentralized
+
+Nova captures a pixel-perfect static copy of your site using a real browser, so JavaScript-heavy frameworks render correctly. Cross-origin API responses are captured and replayed so the copy works standalone.
 
 ```bash
-# Clone and deploy in one command
-nova clone https://example.com
+# Create a decentralized copy of your site
+nova clone https://your-site.com
 
-# Limit how many pages to crawl
-nova clone https://example.com --max-pages 10
+# Limit how many pages to capture
+nova clone https://your-site.com --max-pages 10
 
-# Clone, deploy, and point an ENS domain at it
-nova clone https://example.com --ens mysite.eth
+# Deploy and point an ENS domain at it
+nova clone https://your-site.com --ens mysite.eth
 
-# Clone only, don't deploy
-nova clone https://example.com --no-deploy
+# Capture only, review before deploying
+nova clone https://your-site.com --no-deploy
 ```
 
-Nova uses a real browser to render the site, so JavaScript-heavy frameworks (React, Next.js, Nuxt, Vue) are captured correctly. Cross-origin API responses are cached and replayed so the clone works standalone on IPFS.
-
----
-
-## Deploy Your Own Site
+Already have a static build? Deploy it directly:
 
 ```bash
 # Deploy a build output directory
@@ -57,28 +62,28 @@ nova deploy ./dist
 # Deploy with an ENS domain
 nova deploy ./public --ens mysite.eth
 
-# Deploy and remove all old versions (only new deploy kept)
+# Deploy and remove previous versions
 nova deploy ./dist --clean
 
 # Deploy an archive
 nova deploy site.zip
 ```
 
-Nova accepts directories or archives (`.zip`, `.tar.gz`, `.tgz`, `.tar`).
+Nova accepts directories and archives (`.zip`, `.tar.gz`, `.tgz`, `.tar`).
 
 When it's done, your site is live at:
 
-> `https://mysite.eth.limo` -- if you used ENS
+> `https://mysite.eth.limo` -- if you set up an ENS domain
 >
 > `https://<cid>.ipfs.dweb.link` -- always available via IPFS gateway
 
-A **CID** (Content Identifier) is a unique fingerprint for your content on IPFS. It looks like `bafybei...` and never changes for the same content.
+A **CID** (Content Identifier) is a unique fingerprint for your content on IPFS. Same content always produces the same CID.
 
 ---
 
 ## AI Editor Integration (MCP)
 
-Nova includes an MCP server so your AI editor can clone, deploy, and manage sites through conversation. Install once, then just ask it to deploy.
+Nova includes an MCP server so your AI editor can deploy and manage sites through conversation.
 
 ### Setup
 
@@ -112,84 +117,80 @@ Settings > MCP > Add MCP Server. Set command to `nova-mcp`.
 
 ### What you can ask
 
-- "Clone example.com and deploy it to Filecoin"
-- "Deploy my dist folder"
+- "Deploy my site to Filecoin"
+- "Make a decentralized copy of example.com"
 - "Update the ENS for mysite.eth"
 - "What's currently deployed on mysite.eth?"
 - "Clean up old deployments"
 
-No wallet or credentials needed to start. The AI will use `nova_demo` for instant free deploys, and guide you through setting up permanent hosting when you're ready.
+No wallet needed to start. The AI uses `nova_demo` for instant free deploys, and guides you through permanent hosting when you're ready.
 
 ### Tools
 
 | Tool | What it does |
 |------|-------------|
-| `nova_demo` | Clone a website or deploy a directory for free (no wallet needed) |
+| `nova_demo` | Deploy for free, no wallet needed |
 | `nova_deploy` | Deploy to mainnet with optional ENS |
 | `nova_ens` | Point an ENS domain to a CID |
 | `nova_status` | Check what an ENS domain points to |
-| `nova_manage` | List all stored content grouped by deploy |
-| `nova_manage_clean` | Remove old/duplicate content to reduce costs |
+| `nova_manage` | List all stored content |
+| `nova_manage_clean` | Remove old content to reduce costs |
 | `nova_poll` | Check if a browser-signed transaction completed |
 
 ### SKILL.md
 
-Nova ships a `SKILL.md` in the npm package that teaches any AI assistant how to use the MCP tools effectively. If your AI tool supports skill files, point it at `node_modules/filecoin-nova/SKILL.md` for the best experience.
+Nova ships a `SKILL.md` in the npm package that teaches any AI assistant how to use the MCP tools. If your AI tool supports skill files, point it at `node_modules/filecoin-nova/SKILL.md`.
 
 ---
 
 ## Auth
 
-Nova is designed so you never need to paste private keys. There are three levels:
+Nova is designed so you never need to paste private keys.
 
-### 1. No auth (demo mode)
+### Demo mode (no auth)
 
 `nova demo` works instantly. Free, calibration testnet, no wallet needed.
 
-### 2. Session keys (recommended for permanent hosting)
+### Session keys (permanent hosting)
 
-Session keys are scoped to storage operations only -- they cannot move funds, so they're safe to use in AI chat sessions.
+Session keys are scoped to storage operations only -- they cannot move funds, making them safe to use in AI chat sessions.
 
-**Create a session key:**
 1. Go to [session.focify.eth.limo](https://session.focify.eth.limo)
 2. Connect MetaMask (Filecoin network)
 3. Sign the transaction
-4. Copy the session key back
+4. Use the session key with Nova
 
-**Use it:**
 ```bash
 nova deploy ./dist
 # Nova prompts for session key + wallet address
 ```
 
-Or pass as env vars for CI:
+Or set as env vars for automation:
 ```bash
 export NOVA_SESSION_KEY=0x...
 export NOVA_WALLET_ADDRESS=0x...
 nova deploy ./dist
 ```
 
-### 3. Browser signing (ENS updates)
+### Browser signing (ENS)
 
-ENS updates require an Ethereum wallet key. Instead of pasting it, Nova opens a browser page where you sign with MetaMask:
+ENS updates require an Ethereum wallet. Nova opens a browser page where you sign with MetaMask -- no keys to copy:
 
 ```bash
 nova ens bafybei... --ens mysite.eth
-# Opens browser signing page, waits for your signature
+# Opens signing page, waits for confirmation
 ```
-
-The MCP server does the same -- it returns a signing URL for the user to click and polls the chain for confirmation.
 
 ### Environment variables
 
-For CI/automation, set env vars instead of interactive prompts:
+For CI/automation:
 
 | Variable | What it does |
 |----------|-------------|
-| `NOVA_SESSION_KEY` | Session key for storage auth (recommended) |
-| `NOVA_WALLET_ADDRESS` | Wallet address for session key auth |
+| `NOVA_SESSION_KEY` | Session key for storage auth |
+| `NOVA_WALLET_ADDRESS` | Wallet address for session key |
 | `NOVA_PIN_KEY` | Raw Filecoin private key (CI fallback) |
-| `NOVA_ENS_KEY` | Ethereum private key for ENS updates |
+| `NOVA_ENS_KEY` | Ethereum private key for ENS |
 | `NOVA_ENS_NAME` | Default ENS domain |
 | `NOVA_RPC_URL` | Custom Ethereum RPC |
 | `NOVA_PROVIDER_ID` | Storage provider ID |
@@ -198,7 +199,7 @@ For CI/automation, set env vars instead of interactive prompts:
 
 ## Manage Storage
 
-Every deploy creates pieces on Filecoin. Over time, old deploys accumulate. Nova helps you see what's stored and clean up what you don't need.
+Each deploy creates pieces on Filecoin. Over time, previous versions accumulate. Nova helps you see what's stored and clean up what you don't need.
 
 ```bash
 # See all stored content grouped by deploy
@@ -207,10 +208,10 @@ nova manage
 # Preview what would be cleaned up (safe dry-run)
 nova manage clean
 
-# Actually remove old/duplicate pieces
+# Remove old/duplicate versions
 nova manage clean --really-do-it
 
-# Keep specific CIDs, remove everything else
+# Keep specific versions, remove everything else
 nova manage clean --keep bafybei...,bafybei... --really-do-it
 ```
 
@@ -220,7 +221,7 @@ Cleanup is safe by default -- `nova manage clean` only shows a plan. You need `-
 
 ## What You Need
 
-For **demo mode**: just [Node.js](https://nodejs.org/) 20.10+. That's it.
+For **demo mode**: just [Node.js](https://nodejs.org/) 20.10+.
 
 For **permanent hosting**:
 
@@ -231,40 +232,38 @@ For **permanent hosting**:
 | MetaMask with ETH *(optional)* | Gas for ENS updates | Same MetaMask wallet |
 | An ENS domain *(optional)* | Human-readable URL | Register at [app.ens.domains](https://app.ens.domains) |
 
-Storage costs under $0.10/month for a typical website.
-
 ---
 
 ## Commands
 
 | Command | What it does |
 |---------|-------------|
-| `nova demo <url-or-path>` | Clone and deploy for free (no wallet needed) |
-| `nova clone <url>` | Clone a website and deploy to Filecoin |
-| `nova deploy [path]` | Deploy a directory or archive |
+| `nova demo <url-or-path>` | Deploy for free, no wallet needed |
+| `nova clone <url>` | Capture your site and deploy to Filecoin |
+| `nova deploy [path]` | Deploy a local directory or archive |
 | `nova ens <cid> --ens <name>` | Point an ENS domain to a CID |
 | `nova status --ens <name>` | Check what an ENS domain points to |
 | `nova manage` | List all stored content |
-| `nova manage clean` | Preview and remove old/duplicate content |
+| `nova manage clean` | Remove old/duplicate content |
 
 **Options:**
 
 | Flag | Commands | What it does |
 |------|----------|-------------|
-| `--no-deploy` | clone | Clone only, don't deploy |
-| `--max-pages <n>` | clone, demo | Max pages to crawl (default: 50, 0 = unlimited) |
-| `--screenshots` | clone | Save before/after screenshot comparison |
-| `--output <dir>` | clone | Output directory for cloned site |
+| `--no-deploy` | clone | Capture only, don't deploy |
+| `--max-pages <n>` | clone, demo | Max pages to capture (default: 50, 0 = unlimited) |
+| `--screenshots` | clone | Save before/after comparison |
+| `--output <dir>` | clone | Output directory |
 | `--ens <name>` | clone, deploy, ens, status | ENS domain (e.g. `mysite.eth`) |
 | `--rpc-url <url>` | clone, deploy, ens, status | Custom Ethereum RPC |
 | `--provider-id <id>` | clone, deploy | Storage provider ID |
-| `--clean` | clone, deploy | Remove all old pieces after deploy |
+| `--clean` | clone, deploy | Remove all previous versions after deploy |
 | `--calibration` | clone, deploy, manage | Use testnet instead of mainnet |
 | `--json` | clone, deploy, ens, status, manage | Machine-readable JSON output |
 | `--really-do-it` | manage clean | Execute the cleanup |
-| `--keep <cid,...>` | manage clean | Keep specific CIDs, remove everything else |
+| `--keep <cid,...>` | manage clean | Keep specific CIDs, remove the rest |
 | `--remove <cid,...>` | manage clean | Remove specific CIDs only |
-| `--keep-copies` | manage clean | Keep duplicate uploads of the same content |
+| `--keep-copies` | manage clean | Keep duplicate uploads |
 | `--dataset-id <id>` | manage | Target a specific dataset |
 
 ---
@@ -279,8 +278,6 @@ env:
 steps:
   - run: npx filecoin-nova deploy ./dist --json
 ```
-
-In CI there are no interactive prompts -- session key and wallet address must be set as environment variables.
 
 ---
 
@@ -305,9 +302,9 @@ console.log(result.ethLimoUrl);  // https://mysite.eth.limo
 
 ## How It Works
 
-1. **Deploy** -- Nova uploads your site to [Filecoin Onchain Cloud](https://filecoin.cloud) via [filecoin-pin](https://github.com/filecoin-project/filecoin-pin), splitting it into pieces stored onchain. Your site gets an IPFS CID, making it accessible through any IPFS gateway.
-2. **ENS** -- If you specified an ENS domain, Nova updates its contenthash to point to your CID, so anyone can visit `yoursite.eth.limo`.
-3. **Manage** -- Each deploy creates new pieces. `nova manage` shows what's stored and `nova manage clean` removes old versions so you only pay for what you're using.
+1. **Capture** -- Nova renders your site in a real browser, downloads every page and asset, and rewrites URLs to local paths. The result is a self-contained static copy.
+2. **Deploy** -- The copy is uploaded to [Filecoin Onchain Cloud](https://filecoin.cloud) via [filecoin-pin](https://github.com/filecoin-project/filecoin-pin), stored onchain as content-addressed pieces. Your site gets an IPFS CID.
+3. **Resolve** -- If you set up an ENS domain, Nova updates its contenthash so anyone can visit `yoursite.eth.limo`. The content is served through IPFS gateways worldwide.
 
 ## License
 
