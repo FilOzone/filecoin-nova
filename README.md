@@ -21,6 +21,10 @@ Your site gets a permanent, censorship-resistant copy on [Filecoin Onchain Cloud
 
 See what your site looks like on decentralized infrastructure. No account, no wallet, no cost.
 
+**In your browser:** go to [focify.me](https://focify.me), paste a URL, and watch it deploy in real time.
+
+**From the command line:**
+
 ```bash
 npx filecoin-nova demo https://your-site.com
 ```

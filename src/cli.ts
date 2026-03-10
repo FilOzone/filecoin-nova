@@ -1190,7 +1190,7 @@ async function runClone(args: string[]) {
     const config = resolveConfig(process.env);
     if (values["session-key"]) config.sessionKey = values["session-key"];
     if (values["wallet-address"]) config.walletAddress = values["wallet-address"];
-    const ensName = values.ens || config.ensName;
+    let ensName = values.ens || config.ensName;
     const isMainnet = !values.calibration;
 
     if (!hasStorageAuth(config)) {
@@ -1238,6 +1238,17 @@ async function runClone(args: string[]) {
       providerId: values["provider-id"] ? Number(values["provider-id"]) : config.providerId,
       mainnet: isMainnet,
     });
+
+    // Prompt for ENS if not provided
+    if (!ensName && process.stdin.isTTY && !jsonMode) {
+      const { ask: askEns, close: closeEns } = await import("./prompt.js");
+      console.log("");
+      const ensInput = await askEns(promptLabel("Point an ENS domain to this site? (leave blank to skip):"));
+      closeEns();
+      if (ensInput && ensInput.trim()) {
+        ensName = ensInput.trim();
+      }
+    }
 
     // Post-deploy ENS via browser signing (when no ensKey)
     if (ensName && !config.ensKey && !deployResult.txHash) {
