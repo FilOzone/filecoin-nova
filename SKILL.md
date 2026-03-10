@@ -7,9 +7,11 @@ description: Deploy websites to Filecoin Onchain Cloud. Use when the user asks t
 
 Nova deploys static websites to Filecoin Onchain Cloud (decentralized IPFS hosting) and optionally points ENS domains to them.
 
-## Golden Rule
+## Golden Rules
 
-**Always start with `nova_demo`.** It works instantly, requires zero setup, and is free. Only move to `nova_deploy` when the user explicitly wants permanent mainnet hosting.
+1. **`nova_demo` needs NO auth.** It works instantly, requires zero setup, and is free. Always start here unless the user explicitly wants permanent mainnet hosting.
+2. **`nova_deploy`, `nova_manage`, and `nova_manage_clean` REQUIRE `sessionKey` + `walletAddress`.** NEVER call these tools without both values. If you don't have them, ASK the user first -- do not call the tool and let it fail. Direct the user to https://session.focify.eth.limo to create a session key (safe to paste in chat).
+3. **`nova_status` and `nova_ens` need NO auth** for basic lookups. `nova_ens` needs an ENS key or returns a browser signing URL.
 
 ## Tools
 

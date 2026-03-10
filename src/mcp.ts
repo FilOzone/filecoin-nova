@@ -66,14 +66,14 @@ server.registerTool(
     title: "Deploy to Filecoin",
     description:
       "Deploy a static website directory to Filecoin Onchain Cloud (mainnet). " +
-      "IMPORTANT: If the user has never used Nova before or has no wallet/session key, " +
-      "use nova_demo instead -- it deploys instantly with zero setup. " +
-      "This tool requires auth: pass sessionKey + walletAddress params (preferred, safe to paste in chat), " +
-      "or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars. " +
+      "CRITICAL: DO NOT call this tool without sessionKey and walletAddress. " +
+      "If you don't have both values, ASK the user for them first. " +
+      "If the user has never used Nova or has no session key, use nova_demo instead (free, no auth). " +
+      "To get a session key: direct the user to https://session.focify.eth.limo " +
+      "Session keys are safe to paste in chat (scoped to storage only, cannot move funds). " +
       "Optionally update an ENS domain to point to the deployed site. " +
       "Returns the IPFS CID and gateway URL. " +
       "This tool takes about 60 seconds to complete - do not retry if it seems slow. " +
-      "Session keys are scoped to storage operations only and cannot move funds. " +
       "If no ENS key is configured, returns a browser signing URL for the user to sign via MetaMask.",
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
