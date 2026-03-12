@@ -71,6 +71,7 @@ const HELP = `
     ${c.cyan}nova ens${c.reset} <cid> --ens <name>         Point ENS domain to an IPFS CID
     ${c.cyan}nova info${c.reset} <cid>                     Show details for a specific deployment
     ${c.cyan}nova wallet${c.reset}                          Show wallet balance and deposit status
+    ${c.cyan}nova download${c.reset} <cid> [dir]              Download content from IPFS
     ${c.cyan}nova manage${c.reset} [clean]                 Manage pinned pieces and storage costs
     ${c.cyan}nova help${c.reset}                           Show this help
     ${c.cyan}nova --version${c.reset}                      Show version
@@ -684,6 +685,134 @@ async function runEns(args: string[]) {
         }
       }
     }
+  }
+}
+
+async function runDownload(args: string[]) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(HELP);
+    earlyExit(0);
+  }
+
+  const { values, positionals: pos } = parseArgs({
+    args: args.slice(1),
+    options: {
+      json: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+
+  const jsonMode = values.json!;
+  if (jsonMode) muteConsole();
+
+  let cidStr = pos[0];
+  if (!cidStr) {
+    if (!process.stdin.isTTY) {
+      fail("CID argument required.");
+      info("Usage: nova download <cid> [directory]");
+      earlyExit(1, "CID argument required.");
+    }
+    const input = await ask(promptLabel("IPFS CID:"));
+    if (!input) {
+      fail("CID required.");
+      earlyExit(1, "CID required.");
+    }
+    cidStr = input;
+  }
+
+  const outDir = resolve(pos[1] || cidStr);
+  close();
+
+  const { mkdirSync, createWriteStream } = await import("node:fs");
+  const { pipeline } = await import("node:stream/promises");
+  const { Readable } = await import("node:stream");
+  const { execSync } = await import("node:child_process");
+
+  // Download as tar from IPFS gateway (try multiple gateways)
+  const gateways = [
+    `https://${cidStr}.ipfs.w3s.link/?format=tar`,
+    `https://${cidStr}.ipfs.dweb.link/?format=tar`,
+    `https://ipfs.io/ipfs/${cidStr}?format=tar`,
+  ];
+  info(`Downloading ${cidStr}...`);
+
+  let res: Response | null = null;
+  for (let i = 0; i < gateways.length; i++) {
+    try {
+      if (i > 0) info(`Trying gateway ${i + 1}/${gateways.length}...`);
+      const attempt = await fetch(gateways[i], {
+        headers: { Accept: "application/x-tar" },
+        redirect: "follow",
+      });
+      if (attempt.ok) {
+        res = attempt;
+        break;
+      }
+    } catch {
+      // Try next gateway
+    }
+  }
+
+  if (!res || !res.ok) {
+    fail("All IPFS gateways failed. The content may not be available yet.");
+    info("Wait a few minutes for IPNI propagation, then retry.");
+    earlyExit(1, "Gateway error");
+  }
+
+  // Save tar to temp file, then extract
+  const { tmpdir } = await import("node:os");
+  const tarPath = join(tmpdir(), `nova-download-${Date.now()}.tar`);
+
+  const contentLength = Number(res.headers.get("content-length") || 0);
+  let downloaded = 0;
+
+  // Stream response to temp tar file with progress
+  const body = res.body;
+  if (!body) {
+    fail("Empty response from gateway.");
+    earlyExit(1, "Empty response.");
+  }
+
+  const fileStream = createWriteStream(tarPath);
+  const reader = body.getReader();
+  const nodeStream = new Readable({
+    async read() {
+      const { done, value } = await reader.read();
+      if (done) {
+        this.push(null);
+        return;
+      }
+      downloaded += value.byteLength;
+      if (process.stderr.isTTY && contentLength > 0) {
+        const pct = Math.min(100, Math.round((downloaded / contentLength) * 100));
+        process.stderr.write(`\r  ${c.dim}Downloading... ${pct}% (${formatSize(downloaded)})${c.reset}`);
+      } else if (process.stderr.isTTY && downloaded % (1024 * 256) < value.byteLength) {
+        process.stderr.write(`\r  ${c.dim}Downloading... ${formatSize(downloaded)}${c.reset}`);
+      }
+      this.push(value);
+    },
+  });
+
+  await pipeline(nodeStream, fileStream);
+  if (process.stderr.isTTY) process.stderr.write("\r" + " ".repeat(60) + "\r");
+
+  // Extract tar
+  mkdirSync(outDir, { recursive: true });
+  info(`Extracting to ${outDir}...`);
+  execSync(`tar xf "${tarPath}" --strip-components=1 -C "${outDir}"`, { stdio: "pipe" });
+
+  // Cleanup
+  const { unlinkSync } = await import("node:fs");
+  unlinkSync(tarPath);
+
+  if (jsonMode) {
+    unmuteConsole();
+    console.log(JSON.stringify({ cid: cidStr, directory: outDir, size: downloaded }));
+  } else {
+    console.log("");
+    success(`Downloaded to ${c.bold}${outDir}${c.reset}`);
+    label("Size", formatSize(downloaded));
+    console.log("");
   }
 }
 
@@ -1837,6 +1966,9 @@ async function main() {
       break;
     case "wallet":
       await runWallet(args);
+      break;
+    case "download":
+      await runDownload(args);
       break;
     case "status":
       await runStatus(args);
