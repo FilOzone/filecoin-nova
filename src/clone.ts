@@ -57,14 +57,43 @@ function mkdirSafe(dir: string): void {
 }
 
 /**
+ * For Next.js image optimization URLs (/_next/image?url=...), extract the
+ * source image URL. Returns the resolved absolute URL or null if not applicable.
+ */
+function extractNextImageSource(urlStr: string, canonicalOrigin: string): string | null {
+  try {
+    const parsed = new URL(urlStr);
+    if (parsed.origin !== canonicalOrigin) return null;
+    if (parsed.pathname !== "/_next/image") return null;
+    const src = parsed.searchParams.get("url");
+    if (!src) return null;
+    // src may be absolute or root-relative (e.g. /_next/static/media/foo.webp)
+    if (src.startsWith("http")) return src;
+    return canonicalOrigin + (src.startsWith("/") ? src : "/" + src);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Convert a URL to a safe local file path.
  * Query strings are dropped -- static servers (including IPFS gateways)
  * ignore them, so foo.jpg?width=700 serves foo.jpg.
+ *
+ * Next.js /_next/image?url=... URLs are resolved to the source image path
+ * so each image gets its own unique file instead of all colliding on
+ * "_next/image/index.html".
  */
 function urlToLocalPath(urlStr: string, canonicalOrigin: string): string {
   try {
     const parsed = new URL(urlStr);
     let pathname = parsed.pathname;
+
+    // Next.js image optimization: resolve to the source image path
+    const nextSrc = extractNextImageSource(urlStr, canonicalOrigin);
+    if (nextSrc) {
+      return urlToLocalPath(nextSrc, canonicalOrigin);
+    }
 
     if (parsed.origin !== canonicalOrigin) {
       // External assets go under _ext/<hostname>/path
@@ -545,7 +574,12 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         return urls;
       });
 
-      for (const u of domUrls) deferredUrls.add(u);
+      for (const u of domUrls) {
+        deferredUrls.add(u);
+        // For /_next/image?url=X URLs, also queue the source image for direct download
+        const nextSrc = extractNextImageSource(u, canonicalOrigin);
+        if (nextSrc) deferredUrls.add(nextSrc);
+      }
 
       // Hover nav triggers to reveal dropdown links (Radix/React menus open on hover, not click)
       // Only targets elements inside <nav> — FAQ accordions and other expandables are skipped
@@ -614,8 +648,11 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
       // Save captured assets
       const pagePath = urlToLocalPath(currentUrl, canonicalOrigin);
       for (const asset of pageAssets) {
-        const assetNoQuery = asset.url.split("?")[0];
-        if (assetMap.has(asset.url) || assetMap.has(assetNoQuery)) continue;
+        // For /_next/image?url=X URLs, dedup by the source image URL (not the
+        // bare /_next/image path which is shared by ALL images on the page).
+        const nextSrc = extractNextImageSource(asset.url, canonicalOrigin);
+        const dedupKey = nextSrc ? nextSrc.split("?")[0] : asset.url.split("?")[0];
+        if (assetMap.has(asset.url) || assetMap.has(dedupKey)) continue;
 
         // Save page HTML from the raw server response (not page.content()).
         // Raw SSR HTML has no inline animation styles -- JS animations run
@@ -637,7 +674,13 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
 
         const localPath = urlToLocalPath(asset.url, canonicalOrigin);
         assetMap.set(asset.url, localPath);
-        assetMap.set(assetNoQuery, localPath);
+        assetMap.set(dedupKey, localPath);
+        // For /_next/image URLs, also map the source URL so the rewrite
+        // lookup finds the right file when resolving the source path.
+        if (nextSrc) {
+          assetMap.set(nextSrc, localPath);
+          assetMap.set(nextSrc.split("?")[0], localPath);
+        }
 
         const fullPath = join(outDir, localPath);
         mkdirSafe(dirname(fullPath));
@@ -722,9 +765,11 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         return urls.filter(u => u.startsWith("http"));
       });
       // Download new assets not already captured by the main crawl
+      // For /_next/image URLs, dedup by source image path (not the shared /_next/image path)
       const newUrls = mediaUrls.filter(u => {
-        const noQ = u.split("?")[0];
-        return u.startsWith(canonicalOrigin) && !assetMap.has(u) && !assetMap.has(noQ);
+        const nextSrc = extractNextImageSource(u, canonicalOrigin);
+        const dedupKey = nextSrc ? nextSrc.split("?")[0] : u.split("?")[0];
+        return u.startsWith(canonicalOrigin) && !assetMap.has(u) && !assetMap.has(dedupKey);
       });
       if (newUrls.length > 0) {
         info(`    ${newUrls.length} new asset(s) to download`);
@@ -739,9 +784,14 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
               await resp.dispose();
               if (body.length > 0) {
                 const localPath = urlToLocalPath(url, canonicalOrigin);
-                const noQuery = url.split("?")[0];
+                const nextSrc = extractNextImageSource(url, canonicalOrigin);
+                const dedupKey = nextSrc ? nextSrc.split("?")[0] : url.split("?")[0];
                 assetMap.set(url, localPath);
-                assetMap.set(noQuery, localPath);
+                assetMap.set(dedupKey, localPath);
+                if (nextSrc) {
+                  assetMap.set(nextSrc, localPath);
+                  assetMap.set(nextSrc.split("?")[0], localPath);
+                }
                 const fullPath = join(outDir, localPath);
                 mkdirSafe(dirname(fullPath));
                 writeFileSync(fullPath, body);
@@ -924,8 +974,9 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
       }, origUrl.endsWith("/") ? origUrl : origUrl + "/");
 
       // Rewrite all URLs in the DOM using the pre-injected asset map
+      const baseUrl = origUrl.endsWith("/") ? origUrl : origUrl + "/";
       const rewrittenHtml = await rewritePage.evaluate(
-        (prefix: string) => {
+        ({ prefix, baseUrl }: { prefix: string; baseUrl: string }) => {
           const map: Map<string, string> = (window as any).__novaAssetMap;
 
           // Remove SRI and crossorigin attributes that break when served from a different origin.
@@ -944,8 +995,22 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
           }
 
           function lookup(url: string): string | undefined {
-            return map.get(url)
-              || map.get(url.split("?")[0])
+            const direct = map.get(url);
+            if (direct) return direct;
+            // Next.js image optimization: resolve /_next/image?url=X to X
+            // Must check BEFORE the generic query-strip fallback, which would
+            // match the bare /_next/image key (pointing to the first image captured).
+            try {
+              const u = new URL(url);
+              if (u.pathname === "/_next/image") {
+                const src = u.searchParams.get("url");
+                if (src) {
+                  const resolved = src.startsWith("http") ? src : u.origin + (src.startsWith("/") ? src : "/" + src);
+                  return map.get(resolved) || map.get(resolved.split("?")[0]);
+                }
+              }
+            } catch {}
+            return map.get(url.split("?")[0])
               || map.get(url.replace(/\/$/, ""));
           }
 
@@ -956,6 +1021,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
               const val = attr.value.trim();
               if (!val || val.length > 2000) continue;
               if (!val.startsWith("http://") && !val.startsWith("https://")) {
+                // Srcset with absolute URLs
                 if (val.includes(",") && /\s\d+[wx]/.test(val) && val.includes("http")) {
                   let changed = false;
                   const newVal = val.split(",").map((entry: string) => {
@@ -970,6 +1036,35 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
                     return parts.join(" ");
                   }).join(", ");
                   if (changed) attr.value = newVal;
+                  continue;
+                }
+                // Srcset with relative URLs (e.g. /_next/image?url=...&w=640 640w)
+                if (val.includes(",") && /\s\d+[wx]/.test(val)) {
+                  let changed = false;
+                  const newVal = val.split(",").map((entry: string) => {
+                    const parts = entry.trim().split(/\s+/);
+                    try {
+                      const resolved = new URL(parts[0], baseUrl).href;
+                      const localPath = lookup(resolved);
+                      if (localPath) {
+                        parts[0] = prefix + localPath;
+                        changed = true;
+                      }
+                    } catch {}
+                    return parts.join(" ");
+                  }).join(", ");
+                  if (changed) attr.value = newVal;
+                  continue;
+                }
+                // Single relative URL -- resolve against original origin and look up
+                if (val.startsWith("/") || val.startsWith("./") || val.startsWith("../")) {
+                  try {
+                    const resolved = new URL(val, baseUrl).href;
+                    const localPath = lookup(resolved);
+                    if (localPath) {
+                      attr.value = prefix + localPath;
+                    }
+                  } catch {}
                 }
                 continue;
               }
@@ -1059,7 +1154,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
             : "<!DOCTYPE html>";
           return dt + "\n" + document.documentElement.outerHTML;
         },
-        relPrefix
+        { prefix: relPrefix, baseUrl }
       );
 
       writeFileSync(fullPath, rewrittenHtml);
