@@ -746,23 +746,30 @@ async function runManage(args: string[]) {
         continue;
       }
 
-      // Table layout — show "Deployed" column only if subgraph data is available
+      // Table layout — show extra columns only if subgraph data is available
       const hasTimestamps = ds.groups.some((g) => g.createdAt !== null);
+      const hasProofs = ds.groups.some((g) => g.lastProvenAt !== null && g.lastProvenAt > 0);
       const cidW = 59;
       const pcsW = 5;
       const sizeW = 10;
       const statusW = 8;
       const deployedW = 9;
+      const provenW = 9;
 
+      let headerExtra = "";
+      let dividerExtra = "";
+      if (hasTimestamps) {
+        headerExtra += `  ${center("Deployed", deployedW)}`;
+        dividerExtra += `  ${"─".repeat(deployedW)}`;
+      }
+      if (hasProofs) {
+        headerExtra += `  ${center("Proven", provenW)}`;
+        dividerExtra += `  ${"─".repeat(provenW)}`;
+      }
       const headerCols = `${center("CID", cidW)}  ${center("Pcs", pcsW)}  ${center("Size", sizeW)}  ${center("Status", statusW)}`;
       const dividerCols = `${"─".repeat(cidW)}  ${"─".repeat(pcsW)}  ${"─".repeat(sizeW)}  ${"─".repeat(statusW)}`;
-      if (hasTimestamps) {
-        console.log(`  ${c.dim}${headerCols}  ${center("Deployed", deployedW)}${c.reset}`);
-        console.log(`  ${c.dim}${dividerCols}  ${"─".repeat(deployedW)}${c.reset}`);
-      } else {
-        console.log(`  ${c.dim}${headerCols}${c.reset}`);
-        console.log(`  ${c.dim}${dividerCols}${c.reset}`);
-      }
+      console.log(`  ${c.dim}${headerCols}${headerExtra}${c.reset}`);
+      console.log(`  ${c.dim}${dividerCols}${dividerExtra}${c.reset}`);
 
       let totalSize = 0;
 
@@ -785,7 +792,8 @@ async function runManage(args: string[]) {
         const cidLink = `\x1b]8;;https://${g.ipfsRootCID}.ipfs.dweb.link\x07${center(g.ipfsRootCID, cidW)}\x1b]8;;\x07`;
         const labelSuffix = g.label ? `  ${c.dim}${g.label}${c.reset}` : "";
         const deployedStr = hasTimestamps && g.createdAt ? `  ${c.dim}${center(relativeTime(g.createdAt), deployedW)}${c.reset}` : "";
-        console.log(`  ${c.bold}${cidLink}${c.reset}  ${c.dim}${center(pcsStr, pcsW)}${c.reset}  ${c.dim}${center(sizeStr, sizeW)}${c.reset}  ${tag}${deployedStr}${labelSuffix}`);
+        const provenStr = hasProofs && g.lastProvenAt ? `  ${c.dim}${center(relativeTime(g.lastProvenAt), provenW)}${c.reset}` : "";
+        console.log(`  ${c.bold}${cidLink}${c.reset}  ${c.dim}${center(pcsStr, pcsW)}${c.reset}  ${c.dim}${center(sizeStr, sizeW)}${c.reset}  ${tag}${deployedStr}${provenStr}${labelSuffix}`);
       }
 
       if (ds.orphanPieces.length > 0) {
@@ -795,11 +803,7 @@ async function runManage(args: string[]) {
       }
 
       // Totals row
-      if (hasTimestamps) {
-        console.log(`  ${c.dim}${dividerCols}  ${"─".repeat(deployedW)}${c.reset}`);
-      } else {
-        console.log(`  ${c.dim}${dividerCols}${c.reset}`);
-      }
+      console.log(`  ${c.dim}${dividerCols}${dividerExtra}${c.reset}`);
       console.log(`  ${center("Total", cidW)}  ${c.bold}${center(String(Number(ds.activePieceCount)), pcsW)}${c.reset}  ${c.bold}${center(formatSize(totalSize), sizeW)}${c.reset}`);
 
       console.log("");

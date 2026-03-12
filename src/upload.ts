@@ -85,12 +85,25 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
 
     const uploadOptions: Record<string, any> = {
       pieceMetadata,
+      callbacks: {
+        onProgress: (bytesUploaded: number) => {
+          if (!process.stderr.isTTY) return;
+          const pct = Math.min(100, Math.round((bytesUploaded / carSize) * 100));
+          const barW = 20;
+          const filled = Math.round((pct / 100) * barW);
+          const bar = "\u2588".repeat(filled) + "\u2591".repeat(barW - filled);
+          process.stderr.write(`\r  ${c.dim}\u2503${c.reset}  ${bar} ${pct}% (${formatSize(bytesUploaded)} / ${formatSize(carSize)})`);
+        },
+      },
     };
     if (config.providerId !== undefined) {
       uploadOptions.providerIds = [BigInt(config.providerId)];
     }
 
     const result = await manager.upload(carStream as any, uploadOptions);
+    if (process.stderr.isTTY) {
+      process.stderr.write("\r" + " ".repeat(80) + "\r");
+    }
     gutterLine(`Piece CID: ${result.pieceCid}`);
     gutterBottom();
     console.log("");

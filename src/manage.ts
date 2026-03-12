@@ -23,6 +23,8 @@ export interface PieceInfo {
   label: string | null;
   pendingRemoval: boolean;
   createdAt: number | null;
+  lastProvenAt: number | null;
+  totalProofsSubmitted: number | null;
 }
 
 export interface CIDGroup {
@@ -37,6 +39,8 @@ export interface CIDGroup {
   lowestPieceId: bigint;
   highestPieceId: bigint;
   createdAt: number | null;
+  lastProvenAt: number | null;
+  totalProofsSubmitted: number | null;
 }
 
 export interface DataSetSummary {
@@ -160,6 +164,8 @@ export async function listPieces(opts: StorageAuth & {
             label: r.label,
             pendingRemoval: scheduledSet.has(r.pieceId),
             createdAt: null,
+            lastProvenAt: null,
+            totalProofsSubmitted: null,
           });
         }
       }
@@ -182,6 +188,8 @@ export async function listPieces(opts: StorageAuth & {
             label: metaObj.label || null,
             pendingRemoval: scheduledSet.has(BigInt(i)),
             createdAt: null,
+            lastProvenAt: null,
+            totalProofsSubmitted: null,
           });
         } catch {
           // Piece doesn't exist (removed or past end)
@@ -230,6 +238,8 @@ export async function listPieces(opts: StorageAuth & {
         lowestPieceId: ids.reduce((a, b) => (a < b ? a : b)),
         highestPieceId: ids.reduce((a, b) => (a > b ? a : b)),
         createdAt: latestPiece.createdAt,
+        lastProvenAt: latestPiece.lastProvenAt,
+        totalProofsSubmitted: latestPiece.totalProofsSubmitted,
       });
     }
 
@@ -277,6 +287,8 @@ export async function listPieces(opts: StorageAuth & {
         if (root) {
           piece.createdAt = root.createdAt;
           piece.rawSizeBytes = root.rawSize;
+          piece.lastProvenAt = root.lastProvenAt || null;
+          piece.totalProofsSubmitted = root.totalProofsSubmitted || null;
         }
       }
 
@@ -287,6 +299,8 @@ export async function listPieces(opts: StorageAuth & {
         );
         const latestPiece = sortedByIdDesc[0];
         group.createdAt = latestPiece?.createdAt ?? null;
+        group.lastProvenAt = latestPiece?.lastProvenAt ?? null;
+        group.totalProofsSubmitted = latestPiece?.totalProofsSubmitted ?? null;
         const rawSizes = group.pieces
           .map((p) => p.rawSizeBytes)
           .filter((s): s is number => s !== null);
