@@ -70,6 +70,7 @@ const HELP = `
     ${c.cyan}nova ens${c.reset} [name]                      Check ENS contenthash + pin status
     ${c.cyan}nova ens${c.reset} <cid> --ens <name>         Point ENS domain to an IPFS CID
     ${c.cyan}nova info${c.reset} <cid>                     Show details for a specific deployment
+    ${c.cyan}nova wallet${c.reset}                          Show wallet balance and deposit status
     ${c.cyan}nova manage${c.reset} [clean]                 Manage pinned pieces and storage costs
     ${c.cyan}nova help${c.reset}                           Show this help
     ${c.cyan}nova --version${c.reset}                      Show version
@@ -684,6 +685,99 @@ async function runEns(args: string[]) {
       }
     }
   }
+}
+
+async function runWallet(args: string[]) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(HELP);
+    earlyExit(0);
+  }
+
+  const { values } = parseArgs({
+    args: args.slice(1),
+    options: {
+      calibration: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+    },
+    allowPositionals: false,
+  });
+
+  const jsonMode = values.json!;
+  if (jsonMode) muteConsole();
+
+  const config = resolveConfig(process.env);
+  if (!hasStorageAuth(config)) {
+    fail("No Filecoin auth configured.");
+    info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.");
+    earlyExit(1, "No Filecoin auth configured.");
+  }
+
+  const isMainnet = !values.calibration;
+  const { createSynapse, resolveWalletAddress } = await import("./auth.js");
+  const { getBalance } = await import("viem/actions");
+  const { balance: erc20Balance } = await import("@filoz/synapse-core/erc20");
+  const { accounts: payAccounts } = await import("@filoz/synapse-core/pay");
+
+  const auth = { pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress };
+  const walletAddr = resolveWalletAddress(auth);
+  const synapse = createSynapse(auth, isMainnet);
+
+  info(`Querying ${isMainnet ? "mainnet" : "calibration"}...`);
+
+  // Fetch FIL balance, USDFC balance, and deposit info in parallel
+  const [filBalance, usdfcInfo, depositInfo] = await Promise.all([
+    getBalance(synapse.client, { address: walletAddr }).catch(() => null),
+    erc20Balance(synapse.client, { address: walletAddr }).catch(() => null),
+    payAccounts(synapse.client, { address: walletAddr }).catch(() => null),
+  ]);
+
+  // Format values (18 decimals for FIL, variable for USDFC)
+  const formatToken = (val: bigint, decimals: number) => {
+    const whole = val / BigInt(10 ** decimals);
+    const frac = val % BigInt(10 ** decimals);
+    const fracStr = frac.toString().padStart(decimals, "0").slice(0, 4);
+    return `${whole}.${fracStr}`;
+  };
+
+  if (jsonMode) {
+    unmuteConsole();
+    console.log(jsonStringify({
+      address: walletAddr,
+      network: isMainnet ? "mainnet" : "calibration",
+      fil: filBalance !== null ? formatToken(filBalance, 18) : null,
+      usdfc: usdfcInfo ? { balance: formatToken(usdfcInfo.value, usdfcInfo.decimals), symbol: usdfcInfo.symbol } : null,
+      deposit: depositInfo ? {
+        funds: formatToken(depositInfo.funds, 6),
+        available: formatToken(depositInfo.availableFunds, 6),
+        locked: formatToken(depositInfo.lockupCurrent, 6),
+      } : null,
+    }));
+    return;
+  }
+
+  console.log("");
+  label("Wallet", walletAddr);
+  label("Network", isMainnet ? "Filecoin Mainnet" : "Calibration Testnet");
+  console.log("");
+
+  if (filBalance !== null) {
+    label("FIL", `${formatToken(filBalance, 18)} FIL`);
+  }
+  if (usdfcInfo) {
+    label(usdfcInfo.symbol, `${formatToken(usdfcInfo.value, usdfcInfo.decimals)} ${usdfcInfo.symbol}`);
+  }
+  console.log("");
+
+  if (depositInfo) {
+    label("Deposit", `${formatToken(depositInfo.funds, 6)} USDFC`);
+    label("Available", `${formatToken(depositInfo.availableFunds, 6)} USDFC`);
+    if (depositInfo.lockupCurrent > 0n) {
+      label("Locked", `${formatToken(depositInfo.lockupCurrent, 6)} USDFC`);
+    }
+  } else {
+    info("No deposit account found.");
+  }
+  console.log("");
 }
 
 async function runInfo(args: string[]) {
@@ -1740,6 +1834,9 @@ async function main() {
       break;
     case "info":
       await runInfo(args);
+      break;
+    case "wallet":
+      await runWallet(args);
       break;
     case "status":
       await runStatus(args);
