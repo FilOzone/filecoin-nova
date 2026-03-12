@@ -7,7 +7,7 @@
   "exports": {
     ".": "./dist/deploy.js",
     "./ens": "./dist/ens.js",
-    "./pin": "./dist/pin.js",
+    "./upload": "./dist/upload.js",
     "./clone": "./dist/clone.js",
     "./manage": "./dist/manage.js"
   },
@@ -42,16 +42,21 @@
   "dependencies": {
     "@filoz/synapse-core": "^0.2.3",
     "@filoz/synapse-sdk": "^0.38.0",
+    "@helia/unixfs": "^7.0.4",
+    "@ipld/car": "^5.4.2",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "ethers": "^6.13.0",
     "@playwright/browser-chromium": "^1.58.2",
+    "blockstore-core": "^6.1.2",
+    "ethers": "^6.13.0",
     "multiformats": "^13.0.0",
     "playwright": "^1.58.2",
     "viem": "^2.47.0",
     "zod": "^4.3.6"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@playwright/browser-chromium"]
+    "onlyBuiltDependencies": [
+      "@playwright/browser-chromium"
+    ]
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

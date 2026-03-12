@@ -82,6 +82,7 @@ server.registerTool(
       ensName: z.string().optional().describe("ENS domain to point to the site (e.g. mysite.eth)"),
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
       providerId: z.number().optional().describe("Storage provider ID"),
+      label: z.string().optional().describe("Label for this deploy (shown in nova_manage). Defaults to the directory name."),
       clean: z.boolean().optional().describe("After deploying, remove ALL other pieces - only the new deploy is kept. This is destructive and cannot be undone."),
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
@@ -113,6 +114,7 @@ server.registerTool(
           rpcUrl: params.rpcUrl || authConfig.rpcUrl,
           providerId: params.providerId ?? authConfig.providerId,
           mainnet: !params.calibration,
+          label: params.label,
         });
 
         const output: Record<string, unknown> = {

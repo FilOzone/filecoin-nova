@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync, lstatSync } from "node:fs";
 import { resolve, join, basename } from "node:path";
 import { homedir } from "node:os";
-import { pinToFoc, ensureFilecoinPin, installFilecoinPin, isFilecoinPinInstalled } from "./pin.js";
+import { uploadToFoc } from "./upload.js";
 import { updateEnsContenthash } from "./ens.js";
 import { isArchive, extractArchive, cleanupExtracted } from "./archive.js";
 import { deployComplete, step, success, info, c } from "./ui.js";
@@ -22,6 +22,8 @@ export interface DeployConfig {
   rpcUrl?: string;
   providerId?: number;
   mainnet?: boolean;
+  /** Piece metadata label. Defaults to the deployed directory name. */
+  label?: string;
 }
 
 export interface DeployResult {
@@ -81,27 +83,10 @@ function resolvePath(input: string): string {
  * Optionally update ENS contenthash to point to the new CID.
  */
 export async function deploy(config: DeployConfig): Promise<DeployResult> {
-  // 1. Ensure filecoin-pin is installed
-  const fpVersion = await isFilecoinPinInstalled();
-  if (!fpVersion) {
-    info("Installing filecoin-pin (first time only)...");
-    await installFilecoinPin();
-  } else {
-    await ensureFilecoinPin();
-  }
-
-  // Allow library callers to pass auth directly via env vars
-  if (config.sessionKey && config.walletAddress) {
-    process.env.NOVA_SESSION_KEY = config.sessionKey;
-    process.env.NOVA_WALLET_ADDRESS = config.walletAddress;
-  } else if (config.pinKey) {
-    process.env.NOVA_PIN_KEY = config.pinKey;
-  }
-
   // If ENS requested but no key, skip ENS step (caller handles browser signing flow)
   const skipEns = !!(config.ensName && !config.ensKey);
 
-  // 2. Resolve path, handle archives
+  // 1. Resolve path, handle archives
   const resolvedPath = resolvePath(config.path);
   let extractedDir: string | undefined;
   let deployDir = resolvedPath;
@@ -113,7 +98,7 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
   }
 
   try {
-    // 3. Check for empty directory
+    // 2. Check for empty directory
     const bytes = dirSize(deployDir);
     if (bytes === 0) {
       throw new Error(
@@ -123,27 +108,29 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
       );
     }
 
-    // 4. Deploy
+    // 3. Deploy via synapse-sdk
     const totalSteps = (config.ensName && !skipEns) ? 2 : 1;
     console.log("");
     step(1, totalSteps, "Deploying to Filecoin Onchain Cloud");
     console.log("");
     const t1 = Date.now();
-    const pinResult = await pinToFoc({
+    const uploadResult = await uploadToFoc({
       directory: deployDir,
       providerId: config.providerId,
       mainnet: config.mainnet,
       sessionKey: config.sessionKey,
       walletAddress: config.walletAddress,
+      pinKey: config.pinKey,
+      label: config.label || basename(deployDir),
     });
     success(`Done ${elapsed(t1)}`);
 
     const result: DeployResult = {
-      cid: pinResult.cid,
+      cid: uploadResult.cid,
       directory: deployDir,
     };
 
-    // 5. ENS update (optional -- skipped if no key, caller handles browser signing)
+    // 4. ENS update (optional -- skipped if no key, caller handles browser signing)
     if (config.ensName && config.ensKey && !skipEns) {
       console.log("");
       step(2, totalSteps, "Pointing ENS domain to website");
@@ -156,7 +143,7 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
             privateKey: config.ensKey,
             rpcUrl: config.rpcUrl,
           },
-          pinResult.cid
+          uploadResult.cid
         );
 
         result.ensName = ensResult.ensName;

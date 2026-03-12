@@ -1,12 +1,8 @@
-import { Synapse, mainnet, calibration } from "@filoz/synapse-sdk";
 import { WarmStorageService } from "@filoz/synapse-sdk/warm-storage";
 import { StorageContext } from "@filoz/synapse-sdk/storage";
 import { getSizeFromPieceCID } from "@filoz/synapse-core/piece";
-import { fromSecp256k1 } from "@filoz/synapse-core/session-key";
-import { privateKeyToAccount } from "viem/accounts";
-import { createClient, http } from "viem";
-import type { Hex, Address } from "viem";
 import { CID } from "multiformats/cid";
+import { createSynapse, resolveWalletAddress, type StorageAuth } from "./auth.js";
 
 /** Normalize a CID string to CIDv1 base32 for consistent comparison. */
 function toCidV1(cidStr: string): string {
@@ -22,11 +18,13 @@ export interface PieceInfo {
   pieceCid: string;
   sizeBytes: number;
   ipfsRootCID: string | null;
+  label: string | null;
   pendingRemoval: boolean;
 }
 
 export interface CIDGroup {
   ipfsRootCID: string;
+  label: string | null;
   pieces: PieceInfo[];
   totalPieces: number;
   activePieces: number;
@@ -47,52 +45,7 @@ export interface DataSetSummary {
   pendingRemovalCount: number;
 }
 
-export interface StorageAuth {
-  pinKey?: string;
-  sessionKey?: string;
-  walletAddress?: string;
-}
-
-function ensureHexKey(key: string): Hex {
-  return key.startsWith("0x") ? (key as Hex) : (`0x${key}` as Hex);
-}
-
-function resolveWalletAddress(auth: StorageAuth): Address {
-  if (auth.sessionKey && auth.walletAddress) {
-    return auth.walletAddress as Address;
-  }
-  if (auth.pinKey) {
-    return privateKeyToAccount(ensureHexKey(auth.pinKey)).address;
-  }
-  throw new Error("No Filecoin auth configured.");
-}
-
-function createSynapse(auth: StorageAuth, isMainnet: boolean) {
-  const chain = isMainnet ? mainnet : calibration;
-
-  if (auth.sessionKey && auth.walletAddress) {
-    const sessionKeyObj = fromSecp256k1({
-      privateKey: ensureHexKey(auth.sessionKey),
-      root: auth.walletAddress as Address,
-      chain,
-    });
-    // Session key client acts as both the main client (for reads) and session client (for writes).
-    // The root wallet address is embedded in the session key account's rootAddress field.
-    const client = createClient({
-      chain,
-      transport: http(),
-      account: sessionKeyObj.account,
-    });
-    return new Synapse({ client, sessionClient: sessionKeyObj.client });
-  }
-
-  if (auth.pinKey) {
-    const account = privateKeyToAccount(ensureHexKey(auth.pinKey));
-    return Synapse.create({ account, chain, transport: http() });
-  }
-
-  throw new Error("No Filecoin auth configured.");
-}
+export type { StorageAuth } from "./auth.js";
 
 function pieceSizeBytes(pieceCid: string): number {
   if (!pieceCid) return 0;
@@ -106,26 +59,11 @@ function pieceSizeBytes(pieceCid: string): number {
 /**
  * List all datasets and their pieces grouped by IPFS root CID.
  */
-function createReadClient(opts: StorageAuth & { mainnet: boolean }) {
-  const chain = opts.mainnet ? mainnet : calibration;
-  if (opts.sessionKey && opts.walletAddress) {
-    // For reads, use the root wallet as the account so eth_call `from`
-    // is an address that exists on-chain (session key address may not).
-    return createClient({ chain, transport: http(), account: opts.walletAddress as Address });
-  }
-  if (opts.pinKey) {
-    const account = privateKeyToAccount(ensureHexKey(opts.pinKey));
-    return createClient({ chain, transport: http(), account });
-  }
-  return createClient({ chain, transport: http() });
-}
-
 export async function listPieces(opts: StorageAuth & {
   mainnet: boolean;
 }): Promise<DataSetSummary[]> {
   const synapse = createSynapse(opts, opts.mainnet);
-  const readClient = createReadClient(opts);
-  const warmStorage = new WarmStorageService({ client: readClient as typeof synapse.client });
+  const warmStorage = new WarmStorageService({ client: synapse.client });
   const address = resolveWalletAddress(opts);
 
   let datasets;
@@ -179,11 +117,21 @@ export async function listPieces(opts: StorageAuth & {
 
       for await (const piece of ctx.getPieces()) {
         let ipfsRootCID: string | null = null;
+        let pieceLabel: string | null = null;
         try {
           ipfsRootCID = await warmStorage.getPieceMetadataByKey({
             dataSetId,
             pieceId: piece.pieceId,
             key: "ipfsRootCID",
+          });
+        } catch {
+          // Metadata may not exist
+        }
+        try {
+          pieceLabel = await warmStorage.getPieceMetadataByKey({
+            dataSetId,
+            pieceId: piece.pieceId,
+            key: "label",
           });
         } catch {
           // Metadata may not exist
@@ -194,6 +142,7 @@ export async function listPieces(opts: StorageAuth & {
           pieceCid: cidStr,
           sizeBytes: pieceSizeBytes(cidStr),
           ipfsRootCID,
+          label: pieceLabel,
           pendingRemoval: scheduledSet.has(piece.pieceId),
         });
       }
@@ -206,11 +155,13 @@ export async function listPieces(opts: StorageAuth & {
             dataSetId,
             pieceId: BigInt(i),
           });
+          const metaObj = meta as Record<string, string>;
           pieces.push({
             pieceId: BigInt(i),
             pieceCid: "",
             sizeBytes: 0,
-            ipfsRootCID: (meta as Record<string, string>).ipfsRootCID || null,
+            ipfsRootCID: metaObj.ipfsRootCID || null,
+            label: metaObj.label || null,
             pendingRemoval: scheduledSet.has(BigInt(i)),
           });
         } catch {
@@ -240,8 +191,14 @@ export async function listPieces(opts: StorageAuth & {
     for (const [cid, gPieces] of groupMap) {
       const ids = gPieces.map((p) => p.pieceId);
       const active = gPieces.filter((p) => !p.pendingRemoval).length;
+      // Use the label from the most recent piece in the group
+      const sortedByIdDesc = [...gPieces].sort((a, b) =>
+        b.pieceId > a.pieceId ? 1 : b.pieceId < a.pieceId ? -1 : 0,
+      );
+      const groupLabel = sortedByIdDesc.find((p) => p.label)?.label ?? null;
       groups.push({
         ipfsRootCID: cid,
+        label: groupLabel,
         pieces: gPieces,
         totalPieces: gPieces.length,
         activePieces: active,

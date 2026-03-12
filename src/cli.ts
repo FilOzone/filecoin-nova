@@ -139,6 +139,7 @@ async function runDeploy(args: string[]) {
       "provider-id": { type: "string" },
       "session-key": { type: "string" },
       "wallet-address": { type: "string" },
+      label: { type: "string" },
       clean: { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -267,6 +268,7 @@ async function runDeploy(args: string[]) {
     rpcUrl: values["rpc-url"] || config.rpcUrl,
     providerId: parsedProviderId,
     mainnet: isMainnet,
+    label: values.label,
   });
 
   // Post-deploy ENS via browser signing (when no ensKey)
@@ -769,7 +771,8 @@ async function runManage(args: string[]) {
         const sizeStr = formatSize(g.totalSizeBytes);
         totalSize += g.totalSizeBytes;
         const cidLink = `\x1b]8;;https://${g.ipfsRootCID}.ipfs.dweb.link\x07${center(g.ipfsRootCID, cidW)}\x1b]8;;\x07`;
-        console.log(`  ${c.bold}${cidLink}${c.reset}  ${c.dim}${center(pcsStr, pcsW)}${c.reset}  ${c.dim}${center(sizeStr, sizeW)}${c.reset}  ${tag}`);
+        const labelSuffix = g.label ? `  ${c.dim}${g.label}${c.reset}` : "";
+        console.log(`  ${c.bold}${cidLink}${c.reset}  ${c.dim}${center(pcsStr, pcsW)}${c.reset}  ${c.dim}${center(sizeStr, sizeW)}${c.reset}  ${tag}${labelSuffix}`);
       }
 
       if (ds.orphanPieces.length > 0) {
@@ -1107,6 +1110,7 @@ async function runClone(args: string[]) {
       "provider-id": { type: "string" },
       "session-key": { type: "string" },
       "wallet-address": { type: "string" },
+      label: { type: "string" },
       clean: { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -1237,6 +1241,7 @@ async function runClone(args: string[]) {
       rpcUrl: values["rpc-url"] || config.rpcUrl,
       providerId: values["provider-id"] ? Number(values["provider-id"]) : config.providerId,
       mainnet: isMainnet,
+      label: values.label,
     });
 
     // Prompt for ENS if not provided
