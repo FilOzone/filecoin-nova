@@ -69,6 +69,7 @@ const HELP = `
     ${c.cyan}nova deploy${c.reset} [path] [options]        Deploy a directory or archive
     ${c.cyan}nova ens${c.reset} [name]                      Check ENS contenthash + pin status
     ${c.cyan}nova ens${c.reset} <cid> --ens <name>         Point ENS domain to an IPFS CID
+    ${c.cyan}nova info${c.reset} <cid>                     Show details for a specific deployment
     ${c.cyan}nova manage${c.reset} [clean]                 Manage pinned pieces and storage costs
     ${c.cyan}nova help${c.reset}                           Show this help
     ${c.cyan}nova --version${c.reset}                      Show version
@@ -105,6 +106,7 @@ const HELP = `
     ${c.dim}$${c.reset} nova clone https://example.com       ${c.dim}# Clone and deploy a website${c.reset}
     ${c.dim}$${c.reset} nova deploy ./public --ens mysite.eth
     ${c.dim}$${c.reset} nova deploy ./dist --clean           ${c.dim}# Deploy and remove ALL old pieces${c.reset}
+    ${c.dim}$${c.reset} nova info bafybei...                  ${c.dim}# Show details for a deployment${c.reset}
     ${c.dim}$${c.reset} nova ens mysite.eth                  ${c.dim}# Check contenthash + pin status${c.reset}
     ${c.dim}$${c.reset} nova ens bafybei... --ens mysite.eth ${c.dim}# Update ENS to point to CID${c.reset}
     ${c.dim}$${c.reset} nova manage
@@ -681,6 +683,130 @@ async function runEns(args: string[]) {
         }
       }
     }
+  }
+}
+
+async function runInfo(args: string[]) {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(HELP);
+    earlyExit(0);
+  }
+
+  const { values, positionals: pos } = parseArgs({
+    args: args.slice(1),
+    options: {
+      calibration: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+
+  const jsonMode = values.json!;
+  if (jsonMode) muteConsole();
+
+  let cidStr = pos[0];
+  if (!cidStr) {
+    if (!process.stdin.isTTY) {
+      fail("CID argument required.");
+      info("Usage: nova info <cid>");
+      earlyExit(1, "CID argument required.");
+    }
+    const input = await ask(promptLabel("IPFS CID:"));
+    if (!input) {
+      fail("CID required.");
+      earlyExit(1, "CID required.");
+    }
+    cidStr = input;
+  }
+  close();
+
+  const config = resolveConfig(process.env);
+  if (!hasStorageAuth(config)) {
+    fail("No Filecoin auth configured.");
+    info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.");
+    earlyExit(1, "No Filecoin auth configured.");
+  }
+
+  const isMainnet = !values.calibration;
+  const targetCid = toCidV1(cidStr);
+
+  info(`Looking up ${cidStr}...`);
+  const summaries = await listPieces({
+    pinKey: config.pinKey,
+    sessionKey: config.sessionKey,
+    walletAddress: config.walletAddress,
+    mainnet: isMainnet,
+  });
+
+  // Find matching groups across all datasets
+  const matches: Array<{
+    dataSetId: bigint;
+    providerName: string;
+    group: typeof summaries[0]["groups"][0];
+  }> = [];
+
+  for (const ds of summaries) {
+    for (const g of ds.groups) {
+      if (toCidV1(g.ipfsRootCID) === targetCid) {
+        matches.push({ dataSetId: ds.dataSetId, providerName: ds.providerName, group: g });
+      }
+    }
+  }
+
+  if (matches.length === 0) {
+    if (jsonMode) {
+      unmuteConsole();
+      console.log(JSON.stringify({ cid: cidStr, found: false }));
+    } else {
+      console.log("");
+      info(`CID not found in any dataset.`);
+      console.log("");
+    }
+    return;
+  }
+
+  if (jsonMode) {
+    unmuteConsole();
+    console.log(jsonStringify({
+      cid: cidStr,
+      found: true,
+      matches: matches.map((m) => ({
+        dataSetId: Number(m.dataSetId),
+        providerName: m.providerName,
+        pieces: m.group.totalPieces,
+        size: m.group.totalRawSizeBytes ?? m.group.totalSizeBytes,
+        label: m.group.label,
+        createdAt: m.group.createdAt,
+        lastProvenAt: m.group.lastProvenAt,
+        totalProofsSubmitted: m.group.totalProofsSubmitted,
+        pendingRemoval: m.group.pieces.some((p) => p.pendingRemoval),
+      })),
+    }));
+    return;
+  }
+
+  console.log("");
+  label("CID", cidStr);
+  label("Gateway", `https://${targetCid}.ipfs.dweb.link`);
+  console.log("");
+
+  for (const m of matches) {
+    const g = m.group;
+    const pending = g.pieces.filter((p) => p.pendingRemoval).length;
+    const displaySize = g.totalRawSizeBytes ?? g.totalSizeBytes;
+
+    label("Dataset", `${m.dataSetId} (${m.providerName})`);
+    label("Pieces", `${g.totalPieces}${pending > 0 ? ` (${pending} removing)` : ""}`);
+    label("Size", formatSize(displaySize));
+    if (g.label) label("Label", g.label);
+    if (g.createdAt) label("Deployed", relativeTime(g.createdAt));
+    if (g.lastProvenAt && g.lastProvenAt > 0) label("Last proven", relativeTime(g.lastProvenAt));
+    if (g.totalProofsSubmitted && g.totalProofsSubmitted > 0) label("Proofs", String(g.totalProofsSubmitted));
+
+    if (pending === g.totalPieces) {
+      info(`${c.yellow}All pieces pending removal${c.reset}`);
+    }
+    console.log("");
   }
 }
 
@@ -1611,6 +1737,9 @@ async function main() {
       break;
     case "ens":
       await runEns(args);
+      break;
+    case "info":
+      await runInfo(args);
       break;
     case "status":
       await runStatus(args);
