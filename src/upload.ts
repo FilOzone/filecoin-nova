@@ -69,6 +69,7 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
     const rootCidStr = carResult.rootCid.toString();
     const pieceMetadata: Record<string, string> = {
       ipfsRootCID: rootCidStr,
+      withIPFSIndexing: "",  // Tells provider to advertise to IPNI for gateway retrieval
     };
     if (config.label) {
       pieceMetadata.label = config.label;
@@ -85,6 +86,8 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
 
     const uploadOptions: Record<string, any> = {
       pieceMetadata,
+      metadata: { withIPFSIndexing: "" },  // Dataset-level: enables IPNI advertisement for gateway retrieval
+      count: 1,  // Single copy (matches filecoin-pin behavior)
       callbacks: {
         onProgress: (bytesUploaded: number) => {
           if (!process.stderr.isTTY) return;
@@ -104,7 +107,12 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
     if (process.stderr.isTTY) {
       process.stderr.write("\r" + " ".repeat(80) + "\r");
     }
+    const copy = result.copies[0];
     gutterLine(`Piece CID: ${result.pieceCid}`);
+    if (copy) {
+      gutterLine(`Dataset: ${copy.dataSetId}${copy.isNewDataSet ? " (new)" : ""}, Piece ID: ${copy.pieceId}`);
+    }
+    gutterLine("On-chain: confirmed");
     gutterBottom();
     console.log("");
     success(`Deployed: ${c.bold}${rootCidStr}${c.reset}`);
