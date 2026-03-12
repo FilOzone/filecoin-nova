@@ -85,21 +85,32 @@ export async function listPieces(opts: StorageAuth & {
   }
   if (datasets.length === 0) return [];
 
+  // Start subgraph fetch early (runs in parallel with SDK queries)
+  const liveDatasets = datasets.filter((ds) => ds.isLive);
+  const subgraphPromise = fetchDataSetRoots(
+    liveDatasets.map((ds) => ds.dataSetId),
+    opts.mainnet,
+  ).catch(() => new Map<bigint, import("./subgraph.js").DataSetRoots>());
+
+  // Pre-fetch all provider names in parallel
+  const providerNames = new Map<bigint, string>();
+  const uniqueProviderIds = [...new Set(liveDatasets.map((ds) => ds.providerId))];
+  await Promise.all(
+    uniqueProviderIds.map(async (pid) => {
+      try {
+        const info = await synapse.getProviderInfo(pid);
+        providerNames.set(pid, info.name || `provider ${pid}`);
+      } catch {
+        providerNames.set(pid, `provider ${pid}`);
+      }
+    }),
+  );
+
   const summaries: DataSetSummary[] = [];
 
-  for (const ds of datasets) {
-    if (!ds.isLive) continue;
-
+  for (const ds of liveDatasets) {
     const dataSetId = ds.dataSetId;
-
-    // Fetch provider name
-    let providerName = `provider ${ds.providerId}`;
-    try {
-      const providerInfo = await synapse.getProviderInfo(ds.providerId);
-      providerName = providerInfo.name || providerName;
-    } catch {
-      // Fall back to generic name
-    }
+    const providerName = providerNames.get(ds.providerId) || `provider ${ds.providerId}`;
 
     // Get all pieces via StorageContext.getPieces()
     const pieces: PieceInfo[] = [];
@@ -120,38 +131,37 @@ export async function listPieces(opts: StorageAuth & {
         // May not be available
       }
 
+      // Collect all pieces first, then batch-fetch metadata in parallel
+      const rawPieces: Array<{ pieceId: bigint; pieceCid: string }> = [];
       for await (const piece of ctx.getPieces()) {
-        let ipfsRootCID: string | null = null;
-        let pieceLabel: string | null = null;
-        try {
-          ipfsRootCID = await warmStorage.getPieceMetadataByKey({
-            dataSetId,
-            pieceId: piece.pieceId,
-            key: "ipfsRootCID",
+        rawPieces.push({ pieceId: piece.pieceId, pieceCid: String(piece.pieceCid) });
+      }
+
+      // Fetch metadata for all pieces concurrently (10 at a time)
+      const BATCH_SIZE = 10;
+      for (let batch = 0; batch < rawPieces.length; batch += BATCH_SIZE) {
+        const chunk = rawPieces.slice(batch, batch + BATCH_SIZE);
+        const results = await Promise.all(
+          chunk.map(async (p) => {
+            const [ipfsRootCID, pieceLabel] = await Promise.all([
+              warmStorage.getPieceMetadataByKey({ dataSetId, pieceId: p.pieceId, key: "ipfsRootCID" }).catch(() => null),
+              warmStorage.getPieceMetadataByKey({ dataSetId, pieceId: p.pieceId, key: "label" }).catch(() => null),
+            ]);
+            return { ...p, ipfsRootCID, label: pieceLabel };
+          }),
+        );
+        for (const r of results) {
+          pieces.push({
+            pieceId: r.pieceId,
+            pieceCid: r.pieceCid,
+            sizeBytes: pieceSizeBytes(r.pieceCid),
+            rawSizeBytes: null,
+            ipfsRootCID: r.ipfsRootCID,
+            label: r.label,
+            pendingRemoval: scheduledSet.has(r.pieceId),
+            createdAt: null,
           });
-        } catch {
-          // Metadata may not exist
         }
-        try {
-          pieceLabel = await warmStorage.getPieceMetadataByKey({
-            dataSetId,
-            pieceId: piece.pieceId,
-            key: "label",
-          });
-        } catch {
-          // Metadata may not exist
-        }
-        const cidStr = String(piece.pieceCid);
-        pieces.push({
-          pieceId: piece.pieceId,
-          pieceCid: cidStr,
-          sizeBytes: pieceSizeBytes(cidStr),
-          rawSizeBytes: null,
-          ipfsRootCID,
-          label: pieceLabel,
-          pendingRemoval: scheduledSet.has(piece.pieceId),
-          createdAt: null,
-        });
       }
     } catch {
       // If context creation fails, try fetching metadata directly
@@ -246,10 +256,9 @@ export async function listPieces(opts: StorageAuth & {
     });
   }
 
-  // Enrich with subgraph data (timestamps, raw sizes) — best-effort
+  // Enrich with subgraph data (timestamps, raw sizes) — started earlier in parallel
   try {
-    const allDataSetIds = summaries.map((s) => s.dataSetId);
-    const subgraphData = await fetchDataSetRoots(allDataSetIds, opts.mainnet);
+    const subgraphData = await subgraphPromise;
 
     for (const summary of summaries) {
       const dsRoots = subgraphData.get(summary.dataSetId);
