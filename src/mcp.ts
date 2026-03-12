@@ -6,7 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 import { deploy } from "./deploy.js";
 import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
-import { listPieces, cleanPieces } from "./manage.js";
+import { listPieces, cleanPieces, toCidV1 } from "./manage.js";
 import { resolveConfig, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
 import { ensSigningUrl, sessionKeySigningUrl } from "./signing-url.js";
 import { pollEnsContenthash, pollSessionKeyRegistered, pollTxReceipt } from "./poll.js";
@@ -586,6 +586,316 @@ server.registerTool(
         content: [{ type: "text" as const, text: err.message }],
       };
     }
+  }
+);
+
+// nova_clone - Clone a website to a local directory (no deploy)
+server.registerTool(
+  "nova_clone",
+  {
+    title: "Clone a Website",
+    description:
+      "Clone a website into a static directory suitable for Filecoin deployment. " +
+      "Crawls pages, downloads assets, rewrites URLs to relative paths, and injects an API response cache " +
+      "so JS-heavy sites (Next.js, Nuxt, React) work on IPFS. " +
+      "Returns the output directory -- use nova_deploy or nova_demo to deploy it afterwards. " +
+      "Handles Next.js image optimization URLs, SRI removal, cross-origin replay, and locale detection.",
+    inputSchema: z.object({
+      url: z.string().describe("URL of the website to clone (e.g. 'filoz.org' or 'https://example.com')"),
+      maxPages: z.number().optional().describe("Max pages to crawl (default: 50)"),
+      output: z.string().optional().describe("Output directory (default: auto-generated temp dir)"),
+      screenshots: z.boolean().optional().describe("Take before/after screenshots for comparison (default: false)"),
+    }),
+  },
+  async (params): Promise<CallToolResult> => {
+    return redirectConsole(async () => {
+      try {
+        const { clone } = await import("./clone.js");
+
+        // Normalize URL
+        let url = params.url;
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+          url = `https://${url}`;
+        }
+
+        const result = await clone({
+          url,
+          maxPages: params.maxPages,
+          output: params.output,
+          screenshots: params.screenshots,
+        });
+
+        const output = {
+          directory: result.directory,
+          sourceUrl: result.sourceUrl,
+          pages: result.pages,
+          assets: result.assets,
+          totalSize: result.totalSize,
+          screenshots: result.screenshots,
+          nextStep: "Use nova_deploy or nova_demo to deploy this directory to Filecoin.",
+        };
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: err.message }],
+        };
+      }
+    });
+  }
+);
+
+// nova_info - Show details for a specific deployment
+server.registerTool(
+  "nova_info",
+  {
+    title: "Deployment Info",
+    description:
+      "Show details for a specific IPFS CID deployment: dataset, pieces, size, proof status. " +
+      "Requires sessionKey + walletAddress.",
+    inputSchema: z.object({
+      cid: z.string().describe("IPFS CID to look up"),
+      sessionKey: z.string().optional().describe("Filecoin session key (hex)"),
+      walletAddress: z.string().optional().describe("Filecoin wallet address (0x...)"),
+      mainnet: z.boolean().optional().describe("Use mainnet (default: true)"),
+    }),
+  },
+  async (params): Promise<CallToolResult> => {
+    return redirectConsole(async () => {
+      try {
+        const config = resolveConfig(process.env);
+        const sessionKey = params.sessionKey || config.sessionKey;
+        const walletAddress = params.walletAddress || config.walletAddress;
+
+        if (!sessionKey && !config.pinKey) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "sessionKey + walletAddress required. Create a session key at https://session.focify.eth.limo" }],
+          };
+        }
+
+        const isMainnet = params.mainnet !== false;
+        const targetCid = toCidV1(params.cid);
+
+        const summaries = await listPieces({
+          pinKey: config.pinKey,
+          sessionKey,
+          walletAddress,
+          mainnet: isMainnet,
+        });
+
+        const matches: Array<{
+          dataSetId: number;
+          providerName: string;
+          group: typeof summaries[0]["groups"][0];
+        }> = [];
+
+        for (const ds of summaries) {
+          for (const g of ds.groups) {
+            if (toCidV1(g.ipfsRootCID) === targetCid) {
+              matches.push({ dataSetId: Number(ds.dataSetId), providerName: ds.providerName, group: g });
+            }
+          }
+        }
+
+        if (matches.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ cid: params.cid, found: false }, null, 2) }],
+          };
+        }
+
+        const output = {
+          cid: params.cid,
+          found: true,
+          network: isMainnet ? "mainnet" : "calibration",
+          matches: matches.map((m) => ({
+            dataSetId: m.dataSetId,
+            provider: m.providerName,
+            pieces: m.group.pieces.length,
+            totalSize: m.group.totalSizeBytes,
+            deployedAt: m.group.createdAt,
+            lastProven: m.group.lastProvenAt,
+            proofs: m.group.totalProofsSubmitted,
+          })),
+        };
+
+        return {
+          content: [{ type: "text" as const, text: jsonStringify(output) }],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: err.message }],
+        };
+      }
+    });
+  }
+);
+
+// nova_wallet - Show wallet balance and deposit status
+server.registerTool(
+  "nova_wallet",
+  {
+    title: "Wallet Balance",
+    description:
+      "Show FIL and USDFC balance for the configured wallet, plus FOC deposit status. " +
+      "Requires sessionKey + walletAddress.",
+    inputSchema: z.object({
+      sessionKey: z.string().optional().describe("Filecoin session key (hex)"),
+      walletAddress: z.string().optional().describe("Filecoin wallet address (0x...)"),
+      mainnet: z.boolean().optional().describe("Use mainnet (default: true)"),
+    }),
+  },
+  async (params): Promise<CallToolResult> => {
+    return redirectConsole(async () => {
+      try {
+        const config = resolveConfig(process.env);
+        const sessionKey = params.sessionKey || config.sessionKey;
+        const walletAddress = params.walletAddress || config.walletAddress;
+
+        if (!sessionKey && !config.pinKey) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "sessionKey + walletAddress required. Create a session key at https://session.focify.eth.limo" }],
+          };
+        }
+
+        const isMainnet = params.mainnet !== false;
+        const { createSynapse, resolveWalletAddress } = await import("./auth.js");
+        const { getBalance } = await import("viem/actions");
+        const { balance: erc20Balance } = await import("@filoz/synapse-core/erc20");
+        const { accounts: payAccounts } = await import("@filoz/synapse-core/pay");
+
+        const auth = { pinKey: config.pinKey, sessionKey, walletAddress };
+        const walletAddr = resolveWalletAddress(auth);
+        const synapse = createSynapse(auth, isMainnet);
+
+        const [filBalance, usdfcInfo, depositInfo] = await Promise.all([
+          getBalance(synapse.client, { address: walletAddr }).catch(() => null),
+          erc20Balance(synapse.client, { address: walletAddr }).catch(() => null),
+          payAccounts(synapse.client, { address: walletAddr }).catch(() => null),
+        ]);
+
+        const formatToken = (val: bigint, decimals: number) => {
+          const whole = val / BigInt(10 ** decimals);
+          const frac = val % BigInt(10 ** decimals);
+          const fracStr = frac.toString().padStart(decimals, "0").slice(0, 4);
+          return `${whole}.${fracStr}`;
+        };
+
+        const output = {
+          address: walletAddr,
+          network: isMainnet ? "mainnet" : "calibration",
+          fil: filBalance !== null ? formatToken(filBalance, 18) : null,
+          usdfc: usdfcInfo ? { balance: formatToken(usdfcInfo.value, usdfcInfo.decimals), symbol: usdfcInfo.symbol } : null,
+          deposit: depositInfo ? {
+            funds: formatToken(depositInfo.funds, 6),
+            available: formatToken(depositInfo.availableFunds, 6),
+            locked: formatToken(depositInfo.lockupCurrent, 6),
+          } : null,
+        };
+
+        return {
+          content: [{ type: "text" as const, text: jsonStringify(output) }],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: err.message }],
+        };
+      }
+    });
+  }
+);
+
+// nova_download - Download content from IPFS
+server.registerTool(
+  "nova_download",
+  {
+    title: "Download from IPFS",
+    description:
+      "Download content from IPFS by CID to a local directory. " +
+      "Tries multiple gateways (w3s.link, dweb.link, ipfs.io). No auth needed.",
+    inputSchema: z.object({
+      cid: z.string().describe("IPFS CID to download"),
+      directory: z.string().optional().describe("Output directory (default: ./<cid>)"),
+    }),
+  },
+  async (params): Promise<CallToolResult> => {
+    return redirectConsole(async () => {
+      try {
+        const { mkdirSync, createWriteStream, unlinkSync } = await import("node:fs");
+        const { pipeline } = await import("node:stream/promises");
+        const { Readable } = await import("node:stream");
+        const { execSync } = await import("node:child_process");
+        const { tmpdir } = await import("node:os");
+        const { resolve, join } = await import("node:path");
+
+        const cidStr = params.cid;
+        const outDir = resolve(params.directory || cidStr);
+
+        const gateways = [
+          `https://${cidStr}.ipfs.w3s.link/?format=tar`,
+          `https://${cidStr}.ipfs.dweb.link/?format=tar`,
+          `https://ipfs.io/ipfs/${cidStr}?format=tar`,
+        ];
+
+        let res: Response | null = null;
+        for (const gw of gateways) {
+          try {
+            const attempt = await fetch(gw, {
+              headers: { Accept: "application/x-tar" },
+              redirect: "follow",
+            });
+            if (attempt.ok) {
+              res = attempt;
+              break;
+            }
+          } catch {
+            // Try next gateway
+          }
+        }
+
+        if (!res || !res.ok || !res.body) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "All IPFS gateways failed. Content may not be available yet -- wait for IPNI propagation and retry." }],
+          };
+        }
+
+        const tarPath = join(tmpdir(), `nova-download-${Date.now()}.tar`);
+        let downloaded = 0;
+
+        const reader = res.body.getReader();
+        const nodeStream = new Readable({
+          async read() {
+            const { done, value } = await reader.read();
+            if (done) { this.push(null); return; }
+            downloaded += value.byteLength;
+            this.push(value);
+          },
+        });
+
+        const fileStream = createWriteStream(tarPath);
+        await pipeline(nodeStream, fileStream);
+
+        mkdirSync(outDir, { recursive: true });
+        execSync(`tar xf "${tarPath}" --strip-components=1 -C "${outDir}"`, { stdio: "pipe" });
+        unlinkSync(tarPath);
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ cid: cidStr, directory: outDir, size: downloaded }, null, 2) }],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: err.message }],
+        };
+      }
+    });
   }
 );
 

@@ -134,9 +134,13 @@ No wallet needed to start. The AI uses `nova_demo` for instant free deploys, and
 | Tool | What it does |
 |------|-------------|
 | `nova_demo` | Deploy for free, no wallet needed |
+| `nova_clone` | Clone a website into a deployable directory |
 | `nova_deploy` | Deploy to mainnet with optional ENS |
 | `nova_ens` | Point an ENS domain to a CID |
 | `nova_status` | Check what an ENS domain points to |
+| `nova_info` | Show details for a specific deployment |
+| `nova_wallet` | Show wallet balance and deposit status |
+| `nova_download` | Download content from IPFS |
 | `nova_manage` | List all stored content |
 | `nova_manage_clean` | Remove old content to reduce costs |
 | `nova_poll` | Check if a browser-signed transaction completed |

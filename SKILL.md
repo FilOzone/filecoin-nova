@@ -9,8 +9,8 @@ Nova deploys static websites to Filecoin Onchain Cloud (decentralized IPFS hosti
 
 ## Golden Rules
 
-1. **`nova_demo` needs NO auth.** It works instantly, requires zero setup, and is free. Always start here unless the user explicitly wants permanent mainnet hosting.
-2. **`nova_deploy`, `nova_manage`, and `nova_manage_clean` REQUIRE `sessionKey` + `walletAddress`.** NEVER call these tools without both values. If you don't have them, ASK the user first -- do not call the tool and let it fail. Direct the user to https://session.focify.eth.limo to create a session key (safe to paste in chat).
+1. **`nova_demo`, `nova_clone`, and `nova_download` need NO auth.** They work instantly with zero setup. `nova_demo` is free and the recommended starting point for new users.
+2. **`nova_deploy`, `nova_manage`, `nova_manage_clean`, `nova_info`, and `nova_wallet` REQUIRE `sessionKey` + `walletAddress`.** NEVER call these tools without both values. If you don't have them, ASK the user first -- do not call the tool and let it fail. Direct the user to https://session.focify.eth.limo to create a session key (safe to paste in chat).
 3. **`nova_status` and `nova_ens` need NO auth** for basic lookups. `nova_ens` needs an ENS key or returns a browser signing URL.
 
 ## Tools
@@ -79,6 +79,36 @@ Check what an ENS domain currently points to. No auth needed.
 nova_status({ ensName: "mysite.eth" })
 ```
 
+### nova_clone (clone a website)
+Clone a website into a static directory. Crawls pages, downloads assets, rewrites URLs to relative paths, handles Next.js image optimization, and injects an API response cache for JS-heavy sites. Returns the output directory -- deploy it with `nova_deploy` or `nova_demo`.
+
+```
+nova_clone({ url: "example.com" })
+nova_clone({ url: "https://mysite.com", maxPages: 10 })
+```
+
+### nova_info (deployment details)
+Show details for a specific IPFS CID: dataset, pieces, size, proof status. Requires auth.
+
+```
+nova_info({ cid: "bafybei...", sessionKey: "0x...", walletAddress: "0x..." })
+```
+
+### nova_wallet (balance and deposits)
+Show FIL and USDFC balance plus FOC deposit status. Requires auth.
+
+```
+nova_wallet({ sessionKey: "0x...", walletAddress: "0x..." })
+```
+
+### nova_download (download from IPFS)
+Download content from IPFS by CID to a local directory. No auth needed.
+
+```
+nova_download({ cid: "bafybei..." })
+nova_download({ cid: "bafybei...", directory: "./my-site" })
+```
+
 ### nova_manage (list stored content)
 List all pinned pieces grouped by IPFS CID. Shows what's deployed and what can be cleaned up.
 
@@ -130,8 +160,9 @@ When the user wants to move from demo to permanent hosting:
 2. Use `nova_deploy({ path: "...", sessionKey: "...", walletAddress: "..." })`
 
 ### "Clone example.com and put it on Filecoin"
-1. Use `nova_demo({ path: "example.com" })`
-2. Show the gateway URL
+1. Use `nova_clone({ url: "example.com" })` to clone to a local directory
+2. Use `nova_demo({ path: "<directory>" })` or `nova_deploy(...)` to deploy it
+3. Show the gateway URL
 
 ### "Update my ENS domain"
 1. Use `nova_ens({ cid: "...", ensName: "mysite.eth" })`
@@ -139,6 +170,15 @@ When the user wants to move from demo to permanent hosting:
 
 ### "What's deployed on mysite.eth?"
 1. Use `nova_status({ ensName: "mysite.eth" })`
+
+### "Show me details about this CID"
+1. Use `nova_info({ cid: "bafybei...", sessionKey: "...", walletAddress: "..." })`
+
+### "What's my balance?"
+1. Use `nova_wallet({ sessionKey: "...", walletAddress: "..." })`
+
+### "Download this site from IPFS"
+1. Use `nova_download({ cid: "bafybei..." })`
 
 ### "Clean up old deployments"
 1. Use `nova_manage(...)` to list everything
