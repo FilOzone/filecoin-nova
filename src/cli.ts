@@ -67,8 +67,8 @@ const HELP = `
     ${c.cyan}nova demo${c.reset} <url-or-path>              Try Nova instantly -- no wallet needed
     ${c.cyan}nova clone${c.reset} <url> [options]          Clone a website and deploy to Filecoin
     ${c.cyan}nova deploy${c.reset} [path] [options]        Deploy a directory or archive
+    ${c.cyan}nova ens${c.reset} [name]                      Check ENS contenthash + pin status
     ${c.cyan}nova ens${c.reset} <cid> --ens <name>         Point ENS domain to an IPFS CID
-    ${c.cyan}nova status${c.reset} [--ens <name>]          Check ENS contenthash
     ${c.cyan}nova manage${c.reset} [clean]                 Manage pinned pieces and storage costs
     ${c.cyan}nova help${c.reset}                           Show this help
     ${c.cyan}nova --version${c.reset}                      Show version
@@ -105,8 +105,8 @@ const HELP = `
     ${c.dim}$${c.reset} nova clone https://example.com       ${c.dim}# Clone and deploy a website${c.reset}
     ${c.dim}$${c.reset} nova deploy ./public --ens mysite.eth
     ${c.dim}$${c.reset} nova deploy ./dist --clean           ${c.dim}# Deploy and remove ALL old pieces${c.reset}
-    ${c.dim}$${c.reset} nova ens bafybei... --ens mysite.eth
-    ${c.dim}$${c.reset} nova status --ens mysite.eth
+    ${c.dim}$${c.reset} nova ens mysite.eth                  ${c.dim}# Check contenthash + pin status${c.reset}
+    ${c.dim}$${c.reset} nova ens bafybei... --ens mysite.eth ${c.dim}# Update ENS to point to CID${c.reset}
     ${c.dim}$${c.reset} nova manage
     ${c.dim}$${c.reset} nova manage clean --really-do-it
 `;
@@ -305,7 +305,7 @@ async function runDeploy(args: string[]) {
       if (process.stderr.isTTY) process.stderr.write("\r" + " ".repeat(30) + "\r");
       if (!confirmed) {
         info("ENS update not detected yet. It may still be pending.");
-        info(`Check: nova status --ens ${ensName}`);
+        info(`Check: nova ens ${ensName}`);
       }
     }
   }
@@ -362,6 +362,9 @@ async function runDeploy(args: string[]) {
 }
 
 async function runStatus(args: string[]) {
+  console.error(`  ${c.yellow}Note:${c.reset} ${c.dim}nova status is deprecated. Use ${c.reset}nova ens <name>${c.dim} instead.${c.reset}`);
+  console.error("");
+
   if (args.includes("--help") || args.includes("-h")) {
     console.log(HELP);
     earlyExit(0);
@@ -481,21 +484,92 @@ async function runEns(args: string[]) {
 
   const config = resolveConfig(process.env);
 
-  // CID is required as positional argument
-  let cid = pos[0];
-  if (!cid) {
-    if (!process.stdin.isTTY) {
-      fail("CID argument required.");
-      info("Usage: nova ens <cid> --ens <name>");
-      earlyExit(1, "CID argument required.");
+  // Detect read-only mode: positional is an ENS name, or no positional at all
+  const firstPos = pos[0];
+  const isReadMode = !firstPos || firstPos.endsWith(".eth");
+
+  if (isReadMode) {
+    // Read-only: show ENS contenthash + pin status
+    let ensName = firstPos || values.ens || config.ensName;
+    if (!ensName) {
+      if (!process.stdin.isTTY) {
+        fail("ENS name required.");
+        info("Usage: nova ens <name>");
+        earlyExit(1, "ENS name required.");
+      }
+      const input = await ask(promptLabel("ENS domain to check:"));
+      if (!input) {
+        fail("ENS domain required.");
+        earlyExit(1, "ENS domain required.");
+      }
+      ensName = input;
     }
-    const input = await ask(promptLabel("IPFS CID to point to:"));
-    if (!input) {
-      fail("CID required.");
-      earlyExit(1, "CID required.");
+    close();
+
+    if (!ensName.endsWith(".eth")) {
+      fail(`Invalid ENS domain: ${ensName}`);
+      info("ENS domains must end with .eth (e.g. mysite.eth)");
+      earlyExit(1, `Invalid ENS domain: ${ensName}`);
     }
-    cid = input;
+
+    const rpcUrl = values["rpc-url"] || config.rpcUrl;
+    info(`Checking ${ensName}...`);
+    const contenthash = await getEnsContenthash(ensName, rpcUrl);
+    const cid = contenthash?.startsWith("ipfs://") ? contenthash.slice(7) : null;
+
+    // Check pin status if we have storage auth and a CID
+    let pinStatus: { totalPieces: number; activePieces: number; pendingRemoval: number } | null = null;
+    if (cid && hasStorageAuth(config)) {
+      try {
+        const cidV1 = toCidV1(cid);
+        const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet: true });
+        for (const ds of summaries) {
+          const group = ds.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1);
+          if (group) {
+            const pending = group.pieces.filter((p) => p.pendingRemoval).length;
+            pinStatus = {
+              totalPieces: group.totalPieces,
+              activePieces: group.totalPieces - pending,
+              pendingRemoval: pending,
+            };
+            break;
+          }
+        }
+      } catch {
+        // Silently skip -- pin status is supplementary
+      }
+    }
+
+    if (jsonMode) {
+      unmuteConsole();
+      console.log(JSON.stringify({
+        ensName,
+        contenthash: contenthash || null,
+        url: contenthash ? `https://${ensName.replace(/\.eth$/, "")}.eth.limo` : null,
+        ...(cid && { cid }),
+        ...(pinStatus && { pinStatus }),
+      }));
+    } else {
+      console.log("");
+      if (contenthash) {
+        label("ENS", ensName);
+        label("Hash", contenthash);
+        label("URL", `https://${ensName.replace(/\.eth$/, "")}.eth.limo`);
+        if (pinStatus) {
+          const parts = [`${pinStatus.activePieces} active`];
+          if (pinStatus.pendingRemoval > 0) parts.push(`${pinStatus.pendingRemoval} removing`);
+          label("Pins", parts.join(", "));
+        }
+      } else {
+        info(`No contenthash set for ${ensName}`);
+      }
+      console.log("");
+    }
+    return;
   }
+
+  // Write mode: update ENS contenthash
+  let cid = firstPos;
 
   // ENS name
   let ensName = values.ens || config.ensName;
@@ -602,7 +676,7 @@ async function runEns(args: string[]) {
         if (!confirmed) {
           console.log("");
           info("ENS update not detected yet. It may still be pending.");
-          info(`Check: nova status --ens ${ensName}`);
+          info(`Check: nova ens ${ensName}`);
           console.log("");
         }
       }
