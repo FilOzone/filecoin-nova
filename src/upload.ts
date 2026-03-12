@@ -119,6 +119,6 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
 
     return { cid: rootCidStr, directory: config.directory };
   } finally {
-    await cleanupCar(carResult.carPath);
+    await cleanupCar(carResult.carPath).catch(() => {});
   }
 }

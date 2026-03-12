@@ -6,7 +6,7 @@ import { createSynapse, resolveWalletAddress, type StorageAuth } from "./auth.js
 import { fetchDataSetRoots } from "./subgraph.js";
 
 /** Normalize a CID string to CIDv1 base32 for consistent comparison. */
-function toCidV1(cidStr: string): string {
+export function toCidV1(cidStr: string): string {
   try {
     return CID.parse(cidStr).toV1().toString();
   } catch {
@@ -445,7 +445,7 @@ export async function cleanPieces(opts: StorageAuth & {
   });
 
   const txHashes: string[] = [];
-  let lastError: Error | null = null;
+  const errors: string[] = [];
   for (let i = 0; i < filteredPieces.length; i++) {
     const piece = filteredPieces[i];
     opts.onProgress?.(i + 1, filteredPieces.length);
@@ -453,23 +453,20 @@ export async function cleanPieces(opts: StorageAuth & {
       const txHash = await ctx.deletePiece({ piece: piece.pieceId });
       txHashes.push(txHash);
     } catch (err: any) {
-      lastError = err;
-      break;
+      errors.push(`piece ${piece.pieceId}: ${err?.message || err}`);
     }
   }
 
-  const result = {
+  if (errors.length > 0 && txHashes.length === 0) {
+    throw new Error(`Failed to remove pieces: ${errors[0]}`);
+  }
+
+  return {
     removed: txHashes.length,
     txHashes,
     keptCid: keptCids[0] || "",
     keptCids,
-    failed: filteredPieces.length - txHashes.length,
-    error: lastError?.message,
+    failed: errors.length,
+    error: errors.length > 0 ? errors.join("; ") : undefined,
   };
-
-  if (lastError && txHashes.length === 0) {
-    throw new Error(`Failed to remove pieces: ${lastError.message}`);
-  }
-
-  return result;
 }

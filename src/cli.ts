@@ -10,21 +10,12 @@ import { getEnsContenthash, updateEnsContenthash } from "./ens.js";
 import { resolveConfig, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
 import { ensSigningUrl, sessionKeySigningUrl } from "./signing-url.js";
 import { pollEnsContenthash, pollSessionKeyRegistered } from "./poll.js";
-import { listPieces, cleanPieces, type PieceInfo } from "./manage.js";
+import { listPieces, cleanPieces, toCidV1, type PieceInfo } from "./manage.js";
 import { relativeTime } from "./subgraph.js";
 import { ask, close } from "./prompt.js";
 import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize, link } from "./ui.js";
-import { CID } from "multiformats/cid";
 
-/** Normalize a CID string to CIDv1 base32 for consistent comparison. */
-function toCidV1(cidStr: string): string {
-  try {
-    const parsed = CID.parse(cidStr);
-    return parsed.toV1().toString();
-  } catch {
-    return cidStr;
-  }
-}
+
 
 // BigInt-safe JSON serializer (converts bigint to number for output)
 function jsonStringify(value: unknown): string {

@@ -38,56 +38,81 @@ export async function fetchDataSetRoots(
   const url = isMainnet ? SUBGRAPH_URLS.mainnet : SUBGRAPH_URLS.calibration;
   const ids = dataSetIds.map((id) => `"${id}"`).join(", ");
 
-  // Fetch up to 1000 roots per dataset (subgraph pagination limit)
-  const query = `{
-    dataSets(where: { setId_in: [${ids}] }) {
-      setId
-      createdAt
-      roots(first: 1000, orderBy: rootId, orderDirection: asc) {
-        rootId
-        rawSize
-        createdAt
-        removed
-        lastProvenAt
-        totalProofsSubmitted
-      }
-    }
-  }`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Subgraph query failed: ${res.status} ${res.statusText}`);
-  }
-
-  const json = (await res.json()) as {
-    data?: {
-      dataSets: Array<{
-        setId: string;
-        createdAt: string;
-        roots: Array<{
-          rootId: string;
-          rawSize: string;
-          createdAt: string;
-          removed: boolean;
-          lastProvenAt: string;
-          totalProofsSubmitted: string;
-        }>;
-      }>;
-    };
-    errors?: Array<{ message: string }>;
+  type RawRoot = {
+    rootId: string;
+    rawSize: string;
+    createdAt: string;
+    removed: boolean;
+    lastProvenAt: string;
+    totalProofsSubmitted: string;
+  };
+  type RawDataSet = {
+    setId: string;
+    createdAt: string;
+    roots: RawRoot[];
   };
 
-  if (json.errors?.length) {
-    throw new Error(`Subgraph error: ${json.errors[0].message}`);
+  // Paginate: subgraph caps at 1000 per query, use rootId cursor to fetch all
+  const PAGE_SIZE = 1000;
+  const allDataSets = new Map<string, { setId: string; createdAt: string; roots: RawRoot[] }>();
+
+  let lastRootId = 0;
+  let hasMore = true;
+  while (hasMore) {
+    const query = `{
+      dataSets(where: { setId_in: [${ids}] }) {
+        setId
+        createdAt
+        roots(first: ${PAGE_SIZE}, orderBy: rootId, orderDirection: asc, where: { rootId_gt: ${lastRootId} }) {
+          rootId
+          rawSize
+          createdAt
+          removed
+          lastProvenAt
+          totalProofsSubmitted
+        }
+      }
+    }`;
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Subgraph query failed: ${res.status} ${res.statusText}`);
+    }
+
+    const json = (await res.json()) as {
+      data?: { dataSets: RawDataSet[] };
+      errors?: Array<{ message: string }>;
+    };
+
+    if (json.errors?.length) {
+      throw new Error(`Subgraph error: ${json.errors[0].message}`);
+    }
+
+    let pageRootCount = 0;
+    for (const ds of json.data?.dataSets ?? []) {
+      const existing = allDataSets.get(ds.setId);
+      if (existing) {
+        existing.roots.push(...ds.roots);
+      } else {
+        allDataSets.set(ds.setId, { setId: ds.setId, createdAt: ds.createdAt, roots: [...ds.roots] });
+      }
+      for (const r of ds.roots) {
+        const rid = Number(r.rootId);
+        if (rid > lastRootId) lastRootId = rid;
+        pageRootCount++;
+      }
+    }
+
+    hasMore = pageRootCount >= PAGE_SIZE;
   }
 
   const result = new Map<bigint, DataSetRoots>();
-  for (const ds of json.data?.dataSets ?? []) {
+  for (const ds of allDataSets.values()) {
     result.set(BigInt(ds.setId), {
       setId: ds.setId,
       createdAt: Number(ds.createdAt),
