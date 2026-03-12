@@ -3,6 +3,7 @@ import { StorageContext } from "@filoz/synapse-sdk/storage";
 import { getSizeFromPieceCID } from "@filoz/synapse-core/piece";
 import { CID } from "multiformats/cid";
 import { createSynapse, resolveWalletAddress, type StorageAuth } from "./auth.js";
+import { fetchDataSetRoots } from "./subgraph.js";
 
 /** Normalize a CID string to CIDv1 base32 for consistent comparison. */
 function toCidV1(cidStr: string): string {
@@ -17,9 +18,11 @@ export interface PieceInfo {
   pieceId: bigint;
   pieceCid: string;
   sizeBytes: number;
+  rawSizeBytes: number | null;
   ipfsRootCID: string | null;
   label: string | null;
   pendingRemoval: boolean;
+  createdAt: number | null;
 }
 
 export interface CIDGroup {
@@ -30,8 +33,10 @@ export interface CIDGroup {
   activePieces: number;
   duplicateActivePieces: number;
   totalSizeBytes: number;
+  totalRawSizeBytes: number | null;
   lowestPieceId: bigint;
   highestPieceId: bigint;
+  createdAt: number | null;
 }
 
 export interface DataSetSummary {
@@ -141,9 +146,11 @@ export async function listPieces(opts: StorageAuth & {
           pieceId: piece.pieceId,
           pieceCid: cidStr,
           sizeBytes: pieceSizeBytes(cidStr),
+          rawSizeBytes: null,
           ipfsRootCID,
           label: pieceLabel,
           pendingRemoval: scheduledSet.has(piece.pieceId),
+          createdAt: null,
         });
       }
     } catch {
@@ -160,9 +167,11 @@ export async function listPieces(opts: StorageAuth & {
             pieceId: BigInt(i),
             pieceCid: "",
             sizeBytes: 0,
+            rawSizeBytes: null,
             ipfsRootCID: metaObj.ipfsRootCID || null,
             label: metaObj.label || null,
             pendingRemoval: scheduledSet.has(BigInt(i)),
+            createdAt: null,
           });
         } catch {
           // Piece doesn't exist (removed or past end)
@@ -196,6 +205,9 @@ export async function listPieces(opts: StorageAuth & {
         b.pieceId > a.pieceId ? 1 : b.pieceId < a.pieceId ? -1 : 0,
       );
       const groupLabel = sortedByIdDesc.find((p) => p.label)?.label ?? null;
+      // Use the most recent piece's createdAt for the group timestamp
+      const latestPiece = sortedByIdDesc[0];
+      const rawSizes = gPieces.map((p) => p.rawSizeBytes).filter((s): s is number => s !== null);
       groups.push({
         ipfsRootCID: cid,
         label: groupLabel,
@@ -204,8 +216,10 @@ export async function listPieces(opts: StorageAuth & {
         activePieces: active,
         duplicateActivePieces: Math.max(0, active - 1),
         totalSizeBytes: gPieces.reduce((sum, p) => sum + p.sizeBytes, 0),
+        totalRawSizeBytes: rawSizes.length > 0 ? rawSizes[rawSizes.length - 1] : null,
         lowestPieceId: ids.reduce((a, b) => (a < b ? a : b)),
         highestPieceId: ids.reduce((a, b) => (a > b ? a : b)),
+        createdAt: latestPiece.createdAt,
       });
     }
 
@@ -230,6 +244,56 @@ export async function listPieces(opts: StorageAuth & {
       orphanPieces: orphans,
       pendingRemovalCount,
     });
+  }
+
+  // Enrich with subgraph data (timestamps, raw sizes) — best-effort
+  try {
+    const allDataSetIds = summaries.map((s) => s.dataSetId);
+    const subgraphData = await fetchDataSetRoots(allDataSetIds, opts.mainnet);
+
+    for (const summary of summaries) {
+      const dsRoots = subgraphData.get(summary.dataSetId);
+      if (!dsRoots) continue;
+
+      // Build rootId -> root lookup
+      const rootMap = new Map(dsRoots.roots.map((r) => [BigInt(r.rootId), r]));
+
+      // Enrich pieces
+      const allPieces = [
+        ...summary.groups.flatMap((g) => g.pieces),
+        ...summary.orphanPieces,
+      ];
+      for (const piece of allPieces) {
+        const root = rootMap.get(piece.pieceId);
+        if (root) {
+          piece.createdAt = root.createdAt;
+          piece.rawSizeBytes = root.rawSize;
+        }
+      }
+
+      // Update group-level fields
+      for (const group of summary.groups) {
+        const sortedByIdDesc = [...group.pieces].sort((a, b) =>
+          b.pieceId > a.pieceId ? 1 : b.pieceId < a.pieceId ? -1 : 0,
+        );
+        const latestPiece = sortedByIdDesc[0];
+        group.createdAt = latestPiece?.createdAt ?? null;
+        const rawSizes = group.pieces
+          .map((p) => p.rawSizeBytes)
+          .filter((s): s is number => s !== null);
+        group.totalRawSizeBytes = rawSizes.length > 0 ? rawSizes[rawSizes.length - 1] : null;
+      }
+
+      // Re-sort groups by createdAt if available, falling back to pieceId
+      summary.groups.sort((a, b) => {
+        if (a.createdAt !== null && b.createdAt !== null) {
+          return b.createdAt - a.createdAt;
+        }
+        return b.highestPieceId > a.highestPieceId ? 1 : b.highestPieceId < a.highestPieceId ? -1 : 0;
+      });
+    }
+  } catch {
+    // Subgraph unavailable — continue without enrichment
   }
 
   return summaries;

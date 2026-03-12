@@ -11,6 +11,7 @@ import { resolveConfig, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
 import { ensSigningUrl, sessionKeySigningUrl } from "./signing-url.js";
 import { pollEnsContenthash, pollSessionKeyRegistered } from "./poll.js";
 import { listPieces, cleanPieces, type PieceInfo } from "./manage.js";
+import { relativeTime } from "./subgraph.js";
 import { ask, close } from "./prompt.js";
 import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize, link } from "./ui.js";
 import { CID } from "multiformats/cid";
@@ -745,14 +746,23 @@ async function runManage(args: string[]) {
         continue;
       }
 
-      // Table layout
+      // Table layout — show "Deployed" column only if subgraph data is available
+      const hasTimestamps = ds.groups.some((g) => g.createdAt !== null);
       const cidW = 59;
       const pcsW = 5;
       const sizeW = 10;
       const statusW = 8;
+      const deployedW = 9;
 
-      console.log(`  ${c.dim}${center("CID", cidW)}  ${center("Pcs", pcsW)}  ${center("Size", sizeW)}  ${center("Status", statusW)}${c.reset}`);
-      console.log(`  ${c.dim}${"─".repeat(cidW)}  ${"─".repeat(pcsW)}  ${"─".repeat(sizeW)}  ${"─".repeat(statusW)}${c.reset}`);
+      const headerCols = `${center("CID", cidW)}  ${center("Pcs", pcsW)}  ${center("Size", sizeW)}  ${center("Status", statusW)}`;
+      const dividerCols = `${"─".repeat(cidW)}  ${"─".repeat(pcsW)}  ${"─".repeat(sizeW)}  ${"─".repeat(statusW)}`;
+      if (hasTimestamps) {
+        console.log(`  ${c.dim}${headerCols}  ${center("Deployed", deployedW)}${c.reset}`);
+        console.log(`  ${c.dim}${dividerCols}  ${"─".repeat(deployedW)}${c.reset}`);
+      } else {
+        console.log(`  ${c.dim}${headerCols}${c.reset}`);
+        console.log(`  ${c.dim}${dividerCols}${c.reset}`);
+      }
 
       let totalSize = 0;
 
@@ -768,11 +778,14 @@ async function runManage(args: string[]) {
           tag = isLatest ? `${c.green}${center("latest", statusW)}${c.reset}` : `${c.yellow}${center("old", statusW)}${c.reset}`;
         }
         const pcsStr = String(g.totalPieces);
-        const sizeStr = formatSize(g.totalSizeBytes);
-        totalSize += g.totalSizeBytes;
+        // Prefer raw size (actual data) over padded piece size
+        const displaySize = g.totalRawSizeBytes ?? g.totalSizeBytes;
+        const sizeStr = formatSize(displaySize);
+        totalSize += displaySize;
         const cidLink = `\x1b]8;;https://${g.ipfsRootCID}.ipfs.dweb.link\x07${center(g.ipfsRootCID, cidW)}\x1b]8;;\x07`;
         const labelSuffix = g.label ? `  ${c.dim}${g.label}${c.reset}` : "";
-        console.log(`  ${c.bold}${cidLink}${c.reset}  ${c.dim}${center(pcsStr, pcsW)}${c.reset}  ${c.dim}${center(sizeStr, sizeW)}${c.reset}  ${tag}${labelSuffix}`);
+        const deployedStr = hasTimestamps && g.createdAt ? `  ${c.dim}${center(relativeTime(g.createdAt), deployedW)}${c.reset}` : "";
+        console.log(`  ${c.bold}${cidLink}${c.reset}  ${c.dim}${center(pcsStr, pcsW)}${c.reset}  ${c.dim}${center(sizeStr, sizeW)}${c.reset}  ${tag}${deployedStr}${labelSuffix}`);
       }
 
       if (ds.orphanPieces.length > 0) {
@@ -782,7 +795,11 @@ async function runManage(args: string[]) {
       }
 
       // Totals row
-      console.log(`  ${c.dim}${"─".repeat(cidW)}  ${"─".repeat(pcsW)}  ${"─".repeat(sizeW)}  ${"─".repeat(statusW)}${c.reset}`);
+      if (hasTimestamps) {
+        console.log(`  ${c.dim}${dividerCols}  ${"─".repeat(deployedW)}${c.reset}`);
+      } else {
+        console.log(`  ${c.dim}${dividerCols}${c.reset}`);
+      }
       console.log(`  ${center("Total", cidW)}  ${c.bold}${center(String(Number(ds.activePieceCount)), pcsW)}${c.reset}  ${c.bold}${center(formatSize(totalSize), sizeW)}${c.reset}`);
 
       console.log("");
