@@ -181,6 +181,10 @@ nova deploy ./dist
 ENS updates require an Ethereum wallet. Nova opens a browser page where you sign with MetaMask -- no keys to copy:
 
 ```bash
+# Check what an ENS domain points to
+nova ens mysite.eth
+
+# Update ENS to point to a new CID
 nova ens bafybei... --ens mysite.eth
 # Opens signing page, waits for confirmation
 ```
@@ -206,8 +210,17 @@ For CI/automation:
 Each deploy creates pieces on Filecoin. Over time, previous versions accumulate. Nova helps you see what's stored and clean up what you don't need.
 
 ```bash
-# See all stored content grouped by deploy
+# See all stored content grouped by deploy (with timestamps and proof status)
 nova manage
+
+# Get details for a specific deployment
+nova info bafybei...
+
+# Check wallet balance and deposit status
+nova wallet
+
+# Download a previous deployment
+nova download bafybei... ./local-copy
 
 # Preview what would be cleaned up (safe dry-run)
 nova manage clean
@@ -245,8 +258,11 @@ For **permanent hosting**:
 | `nova demo <url-or-path>` | Deploy for free, no wallet needed |
 | `nova clone <url>` | Capture your site and deploy to Filecoin |
 | `nova deploy [path]` | Deploy a local directory or archive |
+| `nova ens <name>` | Check what an ENS domain points to |
 | `nova ens <cid> --ens <name>` | Point an ENS domain to a CID |
-| `nova status --ens <name>` | Check what an ENS domain points to |
+| `nova info <cid>` | Show details for a specific deployment |
+| `nova wallet` | Show wallet balance and deposit status |
+| `nova download <cid> [dir]` | Download content from IPFS |
 | `nova manage` | List all stored content |
 | `nova manage clean` | Remove old/duplicate content |
 
@@ -258,12 +274,12 @@ For **permanent hosting**:
 | `--max-pages <n>` | clone, demo | Max pages to capture (default: 50, 0 = unlimited) |
 | `--screenshots` | clone | Save before/after comparison |
 | `--output <dir>` | clone | Output directory |
-| `--ens <name>` | clone, deploy, ens, status | ENS domain (e.g. `mysite.eth`) |
-| `--rpc-url <url>` | clone, deploy, ens, status | Custom Ethereum RPC |
+| `--ens <name>` | clone, deploy, ens | ENS domain (e.g. `mysite.eth`) |
+| `--rpc-url <url>` | clone, deploy, ens | Custom Ethereum RPC |
 | `--provider-id <id>` | clone, deploy | Storage provider ID |
 | `--clean` | clone, deploy | Remove all previous versions after deploy |
-| `--calibration` | clone, deploy, manage | Use testnet instead of mainnet |
-| `--json` | clone, deploy, ens, status, manage | Machine-readable JSON output |
+| `--calibration` | clone, deploy, info, wallet, manage | Use testnet instead of mainnet |
+| `--json` | clone, deploy, ens, info, wallet, download, manage | Machine-readable JSON output |
 | `--really-do-it` | manage clean | Execute the cleanup |
 | `--keep <cid,...>` | manage clean | Keep specific CIDs, remove the rest |
 | `--remove <cid,...>` | manage clean | Remove specific CIDs only |
@@ -307,7 +323,7 @@ console.log(result.ethLimoUrl);  // https://mysite.eth.limo
 ## How It Works
 
 1. **Capture** -- Nova renders your site in a real browser, downloads every page and asset, and rewrites URLs to local paths. The result is a self-contained static copy.
-2. **Deploy** -- The copy is uploaded to [Filecoin Onchain Cloud](https://filecoin.cloud) via [filecoin-pin](https://github.com/filecoin-project/filecoin-pin), stored onchain as content-addressed pieces. Your site gets an IPFS CID.
+2. **Deploy** -- The copy is packaged as a CAR file and uploaded to [Filecoin Onchain Cloud](https://filecoin.cloud), stored onchain as content-addressed pieces. Your site gets an IPFS CID.
 3. **Resolve** -- If you set up an ENS domain, Nova updates its contenthash so anyone can visit `yoursite.eth.limo`. The content is served through IPFS gateways worldwide.
 
 ## License
