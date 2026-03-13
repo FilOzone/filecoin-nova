@@ -73,8 +73,9 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
       pieceMetadata.label = config.label;
     }
 
-    gutterTop("Uploading to provider");
-    gutterLine(`CAR size: ${formatSize(carSize)}`);
+    const copyCount = 2;
+    gutterTop("Uploading to providers");
+    gutterLine(`CAR size: ${formatSize(carSize)}, ${copyCount} copies`);
 
     // Stream the CAR file — bypasses the 200 MiB Uint8Array size check
     // in StorageContext, routing through uploadPieceStreaming (1 GiB limit)
@@ -85,7 +86,7 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
     const uploadOptions: Record<string, any> = {
       pieceMetadata,
       metadata: { withIPFSIndexing: "" },  // Dataset-level: enables IPNI advertisement for gateway retrieval
-      count: 2,  // Two copies for redundancy (SDK default)
+      count: copyCount,
       callbacks: {
         onProviderSelected: (provider: any) => {
           gutterLine(`Provider: ${provider.id}${provider.pdp?.serviceURL ? ` (${new URL(provider.pdp.serviceURL).hostname})` : ""}`);
@@ -127,15 +128,27 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
         },
       },
     };
-    if (config.providerId !== undefined) {
+    // When providerId is specified with count > 1, the SDK requires providerIds.length === count.
+    // So we create contexts in two calls: one explicit + the rest auto-selected.
+    if (config.providerId !== undefined && copyCount > 1) {
+      const id = BigInt(config.providerId);
+      const contextOpts = { metadata: uploadOptions.metadata, callbacks: uploadOptions.callbacks };
+      const [explicit] = await manager.createContexts({ ...contextOpts, providerIds: [id], count: 1 });
+      const auto = await manager.createContexts({ ...contextOpts, count: copyCount - 1, excludeProviderIds: [id] });
+      uploadOptions.contexts = [explicit, ...auto];
+    } else if (config.providerId !== undefined) {
       uploadOptions.providerIds = [BigInt(config.providerId)];
     }
 
     const result = await manager.upload(carStream as any, uploadOptions);
-    const copy = result.copies[0];
     gutterLine(`Piece CID: ${result.pieceCid}`);
-    if (copy) {
-      gutterLine(`Piece ID: ${copy.pieceId}`);
+    for (const copy of result.copies) {
+      gutterLine(`Copy: provider ${copy.providerId}, piece ${copy.pieceId}`);
+    }
+    if (result.failures.length > 0) {
+      for (const f of result.failures) {
+        gutterLine(`Failed: provider ${f.providerId} (${f.error})`);
+      }
     }
     gutterBottom();
     console.log("");
