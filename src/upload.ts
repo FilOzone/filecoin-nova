@@ -93,14 +93,25 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
         onDataSetResolved: (info: any) => {
           gutterLine(`Dataset: ${info.dataSetId}${info.isNew ? " (new)" : ""}`);
         },
-        onProgress: (bytesUploaded: number) => {
-          if (!process.stderr.isTTY) return;
-          const pct = Math.min(100, Math.round((bytesUploaded / carSize) * 100));
-          const barW = 20;
-          const filled = Math.round((pct / 100) * barW);
-          const bar = "\u2588".repeat(filled) + "\u2591".repeat(barW - filled);
-          process.stderr.write(`\r  ${c.dim}\u2503${c.reset}  ${bar} ${pct}% (${formatSize(bytesUploaded)} / ${formatSize(carSize)})`);
-        },
+        onProgress: (() => {
+          let lastReportedPct = -1;
+          return (bytesUploaded: number) => {
+            const pct = Math.min(100, Math.round((bytesUploaded / carSize) * 100));
+            if (process.stderr.isTTY) {
+              const barW = 20;
+              const filled = Math.round((pct / 100) * barW);
+              const bar = "\u2588".repeat(filled) + "\u2591".repeat(barW - filled);
+              process.stderr.write(`\r  ${c.dim}\u2503${c.reset}  ${bar} ${pct}% (${formatSize(bytesUploaded)} / ${formatSize(carSize)})`);
+            } else {
+              // Non-TTY: emit line-based progress at 10% intervals for piped consumers (focify-me, CI)
+              const milestone = Math.floor(pct / 10) * 10;
+              if (milestone > lastReportedPct) {
+                lastReportedPct = milestone;
+                gutterLine(`Uploading: ${pct}% (${formatSize(bytesUploaded)} / ${formatSize(carSize)})`);
+              }
+            }
+          };
+        })(),
         onStored: () => {
           if (process.stderr.isTTY) {
             process.stderr.write("\r" + " ".repeat(80) + "\r");
