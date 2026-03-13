@@ -15,6 +15,7 @@ jobs:
   deploy-calibnet:
     name: Deploy test site to calibnet
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pull-requests: write
     steps:
@@ -35,16 +36,19 @@ jobs:
           comment: ${{ github.event_name == 'pull_request' }}
 
       - name: Verify outputs
+        env:
+          DEPLOY_CID: ${{ steps.deploy.outputs.cid }}
+          DEPLOY_GATEWAY_URL: ${{ steps.deploy.outputs.gateway-url }}
         run: |
-          echo "CID: ${{ steps.deploy.outputs.cid }}"
-          echo "Gateway: ${{ steps.deploy.outputs.gateway-url }}"
+          echo "CID: $DEPLOY_CID"
+          echo "Gateway: $DEPLOY_GATEWAY_URL"
 
-          if [ -z "${{ steps.deploy.outputs.cid }}" ]; then
+          if [ -z "$DEPLOY_CID" ]; then
             echo "::error::Missing CID output"
             exit 1
           fi
 
-          if [ -z "${{ steps.deploy.outputs.gateway-url }}" ]; then
+          if [ -z "$DEPLOY_GATEWAY_URL" ]; then
             echo "::error::Missing gateway-url output"
             exit 1
           fi

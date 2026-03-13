@@ -68,12 +68,15 @@ runs:
       shell: bash
       env:
         PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
-      run: npm install -g filecoin-nova@${{ inputs.nova-version }}
+        INPUT_NOVA_VERSION: ${{ inputs.nova-version }}
+      run: npm install -g "filecoin-nova@${INPUT_NOVA_VERSION}"
 
     - name: Build
       if: inputs.build-command != ''
       shell: bash
-      run: ${{ inputs.build-command }}
+      env:
+        BUILD_COMMAND: ${{ inputs.build-command }}
+      run: eval "$BUILD_COMMAND"
 
     - name: Deploy
       id: deploy
@@ -83,46 +86,76 @@ runs:
         NOVA_ENS_KEY: ${{ env.NOVA_ENS_KEY }}
         NOVA_WALLET_ADDRESS: ${{ env.NOVA_WALLET_ADDRESS }}
         NOVA_RPC_URL: ${{ env.NOVA_RPC_URL }}
-        NOVA_PROVIDER_ID: ${{ inputs.provider-id }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_ENS_NAME: ${{ inputs.ens-name }}
+        INPUT_LABEL: ${{ inputs.label }}
+        INPUT_PROVIDER_ID: ${{ inputs.provider-id }}
+        INPUT_CLEAN: ${{ inputs.clean }}
+        INPUT_CALIBRATION: ${{ inputs.calibration }}
       run: |
-        # Build the nova command
-        ARGS="${{ inputs.path }} --json"
+        # Build args array (safe from injection -- all values come from env vars)
+        ARGS=()
+        ARGS+=("$INPUT_PATH" "--json")
 
-        if [ "${{ inputs.ens-name }}" != "" ]; then
-          ARGS="$ARGS --ens ${{ inputs.ens-name }}"
+        if [ -n "$INPUT_ENS_NAME" ]; then
+          ARGS+=("--ens" "$INPUT_ENS_NAME")
         else
-          ARGS="$ARGS --no-ens"
+          ARGS+=("--no-ens")
         fi
 
-        if [ "${{ inputs.label }}" != "" ]; then
-          ARGS="$ARGS --label ${{ inputs.label }}"
+        if [ -n "$INPUT_LABEL" ]; then
+          ARGS+=("--label" "$INPUT_LABEL")
         fi
 
-        if [ "${{ inputs.provider-id }}" != "" ]; then
-          ARGS="$ARGS --provider-id ${{ inputs.provider-id }}"
+        if [ -n "$INPUT_PROVIDER_ID" ]; then
+          ARGS+=("--provider-id" "$INPUT_PROVIDER_ID")
         fi
 
-        if [ "${{ inputs.clean }}" = "true" ]; then
-          ARGS="$ARGS --clean --really-do-it"
+        if [ "$INPUT_CLEAN" = "true" ]; then
+          ARGS+=("--clean")
         fi
 
-        if [ "${{ inputs.calibration }}" = "true" ]; then
-          ARGS="$ARGS --calibration"
+        if [ "$INPUT_CALIBRATION" = "true" ]; then
+          ARGS+=("--calibration")
         fi
 
         # Use demo mode for calibnet when no NOVA_PIN_KEY is set
-        if [ "${{ inputs.calibration }}" = "true" ] && [ -z "$NOVA_PIN_KEY" ]; then
+        if [ "$INPUT_CALIBRATION" = "true" ] && [ -z "$NOVA_PIN_KEY" ]; then
           CMD="nova demo"
-          # demo doesn't support --clean, --label, --provider-id, --calibration flags
-          ARGS="${{ inputs.path }} --json"
+          # demo supports path, --json, --ens, --provider-id, --max-pages
+          # Rebuild args keeping only what demo accepts
+          ARGS=("$INPUT_PATH" "--json")
+          if [ -n "$INPUT_ENS_NAME" ]; then
+            ARGS+=("--ens" "$INPUT_ENS_NAME")
+          fi
+          if [ -n "$INPUT_PROVIDER_ID" ]; then
+            ARGS+=("--provider-id" "$INPUT_PROVIDER_ID")
+          fi
         else
           CMD="nova deploy"
         fi
 
-        echo "Running: $CMD $ARGS"
-        RESULT=$($CMD $ARGS)
+        echo "Running: $CMD ${ARGS[*]}"
 
-        echo "Result: $RESULT"
+        # nova --json sends progress to stderr (visible in Actions logs)
+        # and only the JSON result to stdout. Capture stdout, let stderr
+        # pass through for real-time progress in the workflow log.
+        # Disable set -e around the call -- nova outputs {"error": "..."}
+        # on failure which we parse below.
+        set +e
+        RESULT=$($CMD "${ARGS[@]}")
+        set -e
+
+        # Validate we got JSON
+        if [ -z "$RESULT" ]; then
+          echo "::error::Nova produced no output. Check the logs above for errors."
+          exit 1
+        fi
+
+        if ! echo "$RESULT" | jq empty 2>/dev/null; then
+          echo "::error::Nova produced invalid output: $RESULT"
+          exit 1
+        fi
 
         # Parse JSON output
         CID=$(echo "$RESULT" | jq -r '.cid // empty')
@@ -155,7 +188,7 @@ runs:
 
         # Write step summary
         NETWORK="mainnet"
-        if [ "${{ inputs.calibration }}" = "true" ]; then
+        if [ "$INPUT_CALIBRATION" = "true" ]; then
           NETWORK="calibration"
         fi
 
@@ -166,7 +199,7 @@ runs:
           echo "| | |"
           echo "|---|---|"
           echo "| **CID** | \`$CID\` |"
-          echo "| **Gateway** | $GATEWAY_URL |"
+          echo "| **Gateway** | [$GATEWAY_URL]($GATEWAY_URL) |"
           echo "| **Network** | $NETWORK |"
           if [ -n "$ENS_NAME" ]; then
             echo "| **ENS** | $ENS_NAME |"
@@ -184,13 +217,15 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        DEPLOY_CID: ${{ steps.deploy.outputs.cid }}
+        DEPLOY_GATEWAY_URL: ${{ steps.deploy.outputs.gateway-url }}
+        DEPLOY_ENS_URL: ${{ steps.deploy.outputs.ens-url }}
+        INPUT_CALIBRATION: ${{ inputs.calibration }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GITHUB_REPO: ${{ github.repository }}
       run: |
-        CID="${{ steps.deploy.outputs.cid }}"
-        GATEWAY_URL="${{ steps.deploy.outputs.gateway-url }}"
-        ENS_URL="${{ steps.deploy.outputs.ens-url }}"
-
         NETWORK="mainnet"
-        if [ "${{ inputs.calibration }}" = "true" ]; then
+        if [ "$INPUT_CALIBRATION" = "true" ]; then
           NETWORK="calibration"
         fi
 
@@ -199,12 +234,12 @@ runs:
           "$BODY" \
           "| | |" \
           "|---|---|" \
-          "| **CID** | \`$CID\` |" \
-          "| **Gateway** | $GATEWAY_URL |" \
+          "| **CID** | \`$DEPLOY_CID\` |" \
+          "| **Gateway** | [$DEPLOY_GATEWAY_URL]($DEPLOY_GATEWAY_URL) |" \
           "| **Network** | $NETWORK |")
 
-        if [ -n "$ENS_URL" ]; then
-          BODY=$(printf '%s\n%s' "$BODY" "| **ENS** | $ENS_URL |")
+        if [ -n "$DEPLOY_ENS_URL" ]; then
+          BODY=$(printf '%s\n%s' "$BODY" "| **ENS** | $DEPLOY_ENS_URL |")
         fi
 
         BODY=$(printf '%s\n\n%s\n%s\n%s' \
@@ -213,21 +248,20 @@ runs:
           "*Deployed to [Filecoin Onchain Cloud](https://filecoin.cloud) with [Nova](https://github.com/FilOzone/filecoin-nova)*" \
           "<!-- nova-deploy-comment -->")
 
-        # Find existing Nova comment
+        # Find existing Nova comment (paginate to handle PRs with many comments)
         COMMENT_ID=$(gh api \
-          "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+          "repos/${GITHUB_REPO}/issues/${PR_NUMBER}/comments" \
+          --paginate \
           --jq '.[] | select(.body | contains("<!-- nova-deploy-comment -->")) | .id' \
           2>/dev/null | head -1)
 
         if [ -n "$COMMENT_ID" ]; then
-          # Update existing comment
           gh api \
-            "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+            "repos/${GITHUB_REPO}/issues/comments/${COMMENT_ID}" \
             -X PATCH \
             -f body="$BODY"
         else
-          # Create new comment
           gh api \
-            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            "repos/${GITHUB_REPO}/issues/${PR_NUMBER}/comments" \
             -f body="$BODY"
         fi
