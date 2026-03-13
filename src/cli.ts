@@ -5,11 +5,11 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { deploy, dirSize } from "./deploy.js";
-import { demoDeploy, DEMO_SESSION_KEY, DEMO_WALLET_ADDRESS } from "./demo.js";
+import { demoDeploy } from "./demo.js";
 import { getEnsContenthash, updateEnsContenthash } from "./ens.js";
-import { resolveConfig, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
-import { ensSigningUrl, sessionKeySigningUrl } from "./signing-url.js";
-import { pollEnsContenthash, pollSessionKeyRegistered } from "./poll.js";
+import { resolveConfig, hasStorageAuth, hasWalletAddress } from "./config.js";
+import { ensSigningUrl } from "./signing-url.js";
+import { pollEnsContenthash } from "./poll.js";
 import { listPieces, cleanPieces, toCidV1, type PieceInfo } from "./manage.js";
 import { relativeTime } from "./subgraph.js";
 import { ask, close } from "./prompt.js";
@@ -17,10 +17,10 @@ import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSiz
 
 
 
-// BigInt-safe JSON serializer (converts bigint to number for output)
+// BigInt-safe JSON serializer (converts bigint to string to preserve precision)
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value, (_key, val) =>
-    typeof val === "bigint" ? Number(val) : val, 2);
+    typeof val === "bigint" ? val.toString() : val, 2);
 }
 
 // Sentinel error for early exits — skips the error print in main().catch()
@@ -72,9 +72,8 @@ const HELP = `
     No private keys needed. Nova opens your browser for wallet signing via MetaMask.
     For CI/automation, set env vars instead:
 
-    ${c.cyan}NOVA_SESSION_KEY${c.reset}     Session key for storage auth (scoped, safe)
-    ${c.cyan}NOVA_WALLET_ADDRESS${c.reset}  Wallet address for session key auth
-    ${c.cyan}NOVA_PIN_KEY${c.reset}         Filecoin wallet private key (CI fallback)
+    ${c.cyan}NOVA_PIN_KEY${c.reset}         Filecoin wallet private key (for write operations)
+    ${c.cyan}NOVA_WALLET_ADDRESS${c.reset}  Wallet address (for read-only operations)
     ${c.cyan}NOVA_ENS_KEY${c.reset}         Ethereum wallet key (CI fallback for ENS)
     ${c.cyan}NOVA_ENS_NAME${c.reset}        Default ENS domain
     ${c.cyan}NOVA_RPC_URL${c.reset}         Ethereum RPC URL (override default RPCs)
@@ -85,6 +84,7 @@ const HELP = `
     ${c.dim}--ens <name>${c.reset}          ENS domain (e.g. desite.ezpdpz.eth)
     ${c.dim}--rpc-url <url>${c.reset}       Ethereum RPC URL
     ${c.dim}--provider-id <id>${c.reset}    Storage provider ID
+    ${c.dim}--wallet, -w <addr>${c.reset}  Wallet address (overrides NOVA_WALLET_ADDRESS)
     ${c.dim}--clean${c.reset}               After deploying, remove ALL other pieces (only the new deploy is kept)
     ${c.dim}--calibration${c.reset}         Use calibration testnet (default: mainnet)
     ${c.dim}--json${c.reset}                Output result as JSON (for CI/scripts)
@@ -133,8 +133,7 @@ async function runDeploy(args: string[]) {
       ens: { type: "string" },
       "rpc-url": { type: "string" },
       "provider-id": { type: "string" },
-      "session-key": { type: "string" },
-      "wallet-address": { type: "string" },
+      wallet: { type: "string", short: "w" },
       label: { type: "string" },
       clean: { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
@@ -150,42 +149,36 @@ async function runDeploy(args: string[]) {
   banner();
 
   const config = resolveConfig(process.env);
-  if (values["session-key"]) config.sessionKey = values["session-key"];
-  if (values["wallet-address"]) config.walletAddress = values["wallet-address"];
+  if (values.wallet) config.walletAddress = values.wallet;
 
   let directory: string | undefined = pos[0];
   let ensName = values.ens || config.ensName;
 
-  // 1. Filecoin auth (session key preferred, env var fallback, browser signing)
+  // 1. Filecoin auth (pinKey required for write operations)
   if (!hasStorageAuth(config)) {
     if (!process.stdin.isTTY) {
       fail("No Filecoin auth configured.");
-      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.");
+      info("Set NOVA_PIN_KEY env var for non-interactive use.");
       earlyExit(1, "No Filecoin auth configured.");
     }
-    const chain = values.calibration ? "calibration" : "mainnet";
-    const url = sessionKeySigningUrl(chain);
+    const isMainnet = !values.calibration;
+    const { acquireWalletAuth } = await import("./wallet-auth.js");
     console.log("");
-    info("No session key found. Create one in your browser:");
+    info("No wallet configured. Authorize Nova to use your wallet:");
     console.log("");
-    info(`  ${link(url)}`);
+    const auth = await acquireWalletAuth({
+      isMainnet,
+      onUrl: (url) => {
+        info(`  ${link(url)}`);
+        console.log("");
+        info(`${c.dim}Open the link above and approve with your wallet.${c.reset}`);
+      },
+      onProgress: (msg) => info(`${c.dim}${msg}${c.reset}`),
+    });
+    config.pinKey = auth.pinKey;
+    config.walletAddress = auth.walletAddress;
+    success("Wallet authorized!");
     console.log("");
-    info("Connect your MetaMask wallet, sign the transaction, then paste the session key below.");
-    console.log("");
-    const sk = await ask(promptLabel("Session key:"));
-    if (!sk) {
-      fail("Cannot deploy without a session key.");
-      earlyExit(1, "Cannot deploy without a session key.");
-    }
-    const wa = await ask(promptLabel("Wallet address:"));
-    if (!wa) {
-      fail("Wallet address is required with session key.");
-      earlyExit(1, "Wallet address is required.");
-    }
-    config.sessionKey = sk;
-    config.walletAddress = wa;
-    process.env.NOVA_SESSION_KEY = sk;
-    process.env.NOVA_WALLET_ADDRESS = wa;
   }
 
   // 2. Directory or archive
@@ -257,7 +250,6 @@ async function runDeploy(args: string[]) {
   const result = await deploy({
     path: directory,
     pinKey: config.pinKey,
-    sessionKey: config.sessionKey,
     walletAddress: config.walletAddress,
     ensName,
     ensKey: config.ensKey,
@@ -316,7 +308,6 @@ async function runDeploy(args: string[]) {
     try {
       const cleanResult = await cleanPieces({
         pinKey: config.pinKey,
-        sessionKey: config.sessionKey,
         walletAddress: config.walletAddress,
         mainnet: isMainnet,
         keepCids: [result.cid],
@@ -413,7 +404,7 @@ async function runStatus(args: string[]) {
   if (cid && hasStorageAuth(config)) {
     try {
       const cidV1 = toCidV1(cid);
-      const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet: true });
+      const summaries = await listPieces({ pinKey: config.pinKey, walletAddress: config.walletAddress, mainnet: true });
       for (const ds of summaries) {
         const group = ds.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1);
         if (group) {
@@ -517,7 +508,7 @@ async function runEns(args: string[]) {
     if (cid && hasStorageAuth(config)) {
       try {
         const cidV1 = toCidV1(cid);
-        const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet: true });
+        const summaries = await listPieces({ pinKey: config.pinKey, walletAddress: config.walletAddress, mainnet: true });
         for (const ds of summaries) {
           const group = ds.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1);
           if (group) {
@@ -717,7 +708,7 @@ async function runDownload(args: string[]) {
   const { mkdirSync, createWriteStream } = await import("node:fs");
   const { pipeline } = await import("node:stream/promises");
   const { Readable } = await import("node:stream");
-  const { execSync } = await import("node:child_process");
+  const { execFileSync } = await import("node:child_process");
 
   // Download as tar from IPFS gateway (try multiple gateways)
   const gateways = [
@@ -734,6 +725,7 @@ async function runDownload(args: string[]) {
       const attempt = await fetch(gateways[i], {
         headers: { Accept: "application/x-tar" },
         redirect: "follow",
+        signal: AbortSignal.timeout(60_000),
       });
       if (attempt.ok) {
         res = attempt;
@@ -790,7 +782,7 @@ async function runDownload(args: string[]) {
   // Extract tar
   mkdirSync(outDir, { recursive: true });
   info(`Extracting to ${outDir}...`);
-  execSync(`tar xf "${tarPath}" --strip-components=1 -C "${outDir}"`, { stdio: "pipe" });
+  execFileSync("tar", ["xf", tarPath, "--strip-components=1", "-C", outDir], { stdio: "pipe" });
 
   // Cleanup
   const { unlinkSync } = await import("node:fs");
@@ -818,6 +810,7 @@ async function runWallet(args: string[]) {
     options: {
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
+      wallet: { type: "string", short: "w" },
     },
     allowPositionals: false,
   });
@@ -826,21 +819,22 @@ async function runWallet(args: string[]) {
   if (jsonMode) muteConsole();
 
   const config = resolveConfig(process.env);
-  if (!hasStorageAuth(config)) {
-    fail("No Filecoin auth configured.");
-    info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.");
-    earlyExit(1, "No Filecoin auth configured.");
+  if (values.wallet) config.walletAddress = values.wallet;
+  if (!hasWalletAddress(config)) {
+    fail("No wallet address configured.");
+    info("Use --wallet <address> or set NOVA_WALLET_ADDRESS env var.");
+    earlyExit(1, "No wallet address configured.");
   }
 
   const isMainnet = !values.calibration;
-  const { createSynapse, resolveWalletAddress } = await import("./auth.js");
+  const { createReadOnlySynapse, resolveWalletAddress } = await import("./auth.js");
   const { getBalance } = await import("viem/actions");
   const { balance: erc20Balance } = await import("@filoz/synapse-core/erc20");
   const { accounts: payAccounts } = await import("@filoz/synapse-core/pay");
 
-  const auth = { pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress };
+  const auth = { pinKey: config.pinKey, walletAddress: config.walletAddress };
   const walletAddr = resolveWalletAddress(auth);
-  const synapse = createSynapse(auth, isMainnet);
+  const synapse = createReadOnlySynapse(walletAddr, isMainnet);
 
   info(`Querying ${isMainnet ? "mainnet" : "calibration"}...`);
 
@@ -867,9 +861,9 @@ async function runWallet(args: string[]) {
       fil: filBalance !== null ? formatToken(filBalance, 18) : null,
       usdfc: usdfcInfo ? { balance: formatToken(usdfcInfo.value, usdfcInfo.decimals), symbol: usdfcInfo.symbol } : null,
       deposit: depositInfo ? {
-        funds: formatToken(depositInfo.funds, 6),
-        available: formatToken(depositInfo.availableFunds, 6),
-        locked: formatToken(depositInfo.lockupCurrent, 6),
+        funds: formatToken(depositInfo.funds, usdfcInfo?.decimals ?? 18),
+        available: formatToken(depositInfo.availableFunds, usdfcInfo?.decimals ?? 18),
+        locked: formatToken(depositInfo.lockupCurrent, usdfcInfo?.decimals ?? 18),
       } : null,
     }));
     return;
@@ -889,10 +883,11 @@ async function runWallet(args: string[]) {
   console.log("");
 
   if (depositInfo) {
-    label("Deposit", `${formatToken(depositInfo.funds, 6)} USDFC`);
-    label("Available", `${formatToken(depositInfo.availableFunds, 6)} USDFC`);
+    const depositDecimals = usdfcInfo?.decimals ?? 18;
+    label("Deposit", `${formatToken(depositInfo.funds, depositDecimals)} USDFC`);
+    label("Available", `${formatToken(depositInfo.availableFunds, depositDecimals)} USDFC`);
     if (depositInfo.lockupCurrent > 0n) {
-      label("Locked", `${formatToken(depositInfo.lockupCurrent, 6)} USDFC`);
+      label("Locked", `${formatToken(depositInfo.lockupCurrent, depositDecimals)} USDFC`);
     }
   } else {
     info("No deposit account found.");
@@ -911,6 +906,7 @@ async function runInfo(args: string[]) {
     options: {
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
+      wallet: { type: "string", short: "w" },
     },
     allowPositionals: true,
   });
@@ -935,10 +931,11 @@ async function runInfo(args: string[]) {
   close();
 
   const config = resolveConfig(process.env);
-  if (!hasStorageAuth(config)) {
-    fail("No Filecoin auth configured.");
-    info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.");
-    earlyExit(1, "No Filecoin auth configured.");
+  if (values.wallet) config.walletAddress = values.wallet;
+  if (!hasWalletAddress(config)) {
+    fail("No wallet address configured.");
+    info("Use --wallet <address> or set NOVA_WALLET_ADDRESS env var.");
+    earlyExit(1, "No wallet address configured.");
   }
 
   const isMainnet = !values.calibration;
@@ -947,7 +944,6 @@ async function runInfo(args: string[]) {
   info(`Looking up ${cidStr}...`);
   const summaries = await listPieces({
     pinKey: config.pinKey,
-    sessionKey: config.sessionKey,
     walletAddress: config.walletAddress,
     mainnet: isMainnet,
   });
@@ -1047,6 +1043,7 @@ async function runManage(args: string[]) {
 
   ${c.bold}Options (shared)${c.reset}
 
+    ${c.dim}--wallet, -w <addr>${c.reset}  Wallet address (overrides NOVA_WALLET_ADDRESS)
     ${c.dim}--calibration${c.reset}         Use calibration testnet (default: mainnet)
     ${c.dim}--json${c.reset}                Output as JSON
 
@@ -1075,8 +1072,7 @@ async function runManage(args: string[]) {
       "keep-copies": { type: "boolean", default: false },
       "really-do-it": { type: "boolean", default: false },
       "dataset-id": { type: "string" },
-      "session-key": { type: "string" },
-      "wallet-address": { type: "string" },
+      wallet: { type: "string", short: "w" },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
@@ -1087,46 +1083,52 @@ async function runManage(args: string[]) {
   if (jsonMode) muteConsole();
 
   const config = resolveConfig(process.env);
-  if (values["session-key"]) config.sessionKey = values["session-key"];
-  if (values["wallet-address"]) config.walletAddress = values["wallet-address"];
+  if (values.wallet) config.walletAddress = values.wallet;
   const mainnet = !values.calibration;
 
-  if (!hasStorageAuth(config)) {
-    if (!process.stdin.isTTY) {
-      fail("No Filecoin auth configured.");
-      info("Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.");
-      earlyExit(1, "No Filecoin auth configured.");
+  const subcommand = pos[0];
+
+  // Clean requires write auth (pinKey); list only needs wallet address
+  if (subcommand === "clean") {
+    if (!hasStorageAuth(config)) {
+      if (!process.stdin.isTTY) {
+        fail("No Filecoin auth configured.");
+        info("Set NOVA_PIN_KEY env var for non-interactive use.");
+        earlyExit(1, "No Filecoin auth configured.");
+      }
+      const { acquireWalletAuth } = await import("./wallet-auth.js");
+      console.log("");
+      info("No wallet configured. Authorize Nova to use your wallet:");
+      console.log("");
+      const auth = await acquireWalletAuth({
+        isMainnet: mainnet,
+        onUrl: (url) => {
+          info(`  ${link(url)}`);
+          console.log("");
+          info(`${c.dim}Open the link above and approve with your wallet.${c.reset}`);
+        },
+        onProgress: (msg) => info(`${c.dim}${msg}${c.reset}`),
+      });
+      config.pinKey = auth.pinKey;
+      config.walletAddress = auth.walletAddress;
+      success("Wallet authorized!");
+      console.log("");
     }
-    const chain = values.calibration ? "calibration" : "mainnet";
-    const url = sessionKeySigningUrl(chain);
-    console.log("");
-    info("No session key found. Create one in your browser:");
-    console.log("");
-    info(`  ${link(url)}`);
-    console.log("");
-    const sk = await ask(promptLabel("Session key:"));
-    if (!sk) {
-      fail("Cannot manage without a session key.");
-      earlyExit(1, "Cannot manage without a session key.");
+  } else {
+    if (!hasWalletAddress(config)) {
+      fail("No wallet address configured.");
+      info("Use --wallet <address> or set NOVA_WALLET_ADDRESS env var.");
+      earlyExit(1, "No wallet address configured.");
     }
-    const wa = await ask(promptLabel("Wallet address:"));
-    if (!wa) {
-      fail("Wallet address is required.");
-      earlyExit(1, "Wallet address is required.");
-    }
-    config.sessionKey = sk;
-    config.walletAddress = wa;
   }
 
   close();
-
-  const subcommand = pos[0];
 
   if (!subcommand) {
     info(`Querying ${mainnet ? "mainnet" : "calibration"}...`);
     console.log("");
 
-    const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet });
+    const summaries = await listPieces({ pinKey: config.pinKey, walletAddress: config.walletAddress, mainnet });
 
     if (summaries.length === 0) {
       if (jsonMode) {
@@ -1274,7 +1276,7 @@ async function runManage(args: string[]) {
     info(`Scanning ${mainnet ? "mainnet" : "calibration"}...`);
     console.log("");
 
-    const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet });
+    const summaries = await listPieces({ pinKey: config.pinKey, walletAddress: config.walletAddress, mainnet });
     if (summaries.length === 0) {
       info("No datasets found for this wallet.");
       return;
@@ -1457,7 +1459,6 @@ async function runManage(args: string[]) {
     info(`Removing ${totalToRemove} piece(s) - each requires a separate transaction, this may take a while...`);
     const result = await cleanPieces({
       pinKey: config.pinKey,
-      sessionKey: config.sessionKey,
       walletAddress: config.walletAddress,
       mainnet,
       keepCids: hasKeepFlag ? keepCids : undefined,
@@ -1543,8 +1544,7 @@ async function runClone(args: string[]) {
       ens: { type: "string" },
       "rpc-url": { type: "string" },
       "provider-id": { type: "string" },
-      "session-key": { type: "string" },
-      "wallet-address": { type: "string" },
+      wallet: { type: "string", short: "w" },
       label: { type: "string" },
       clean: { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
@@ -1627,49 +1627,38 @@ async function runClone(args: string[]) {
   // Deploy unless --no-deploy
   if (!values["no-deploy"]) {
     const config = resolveConfig(process.env);
-    if (values["session-key"]) config.sessionKey = values["session-key"];
-    if (values["wallet-address"]) config.walletAddress = values["wallet-address"];
+    if (values.wallet) config.walletAddress = values.wallet;
     let ensName = values.ens || config.ensName;
     const isMainnet = !values.calibration;
 
     if (!hasStorageAuth(config)) {
       if (!process.stdin.isTTY) {
         fail("No Filecoin auth configured.");
-        info("Use --no-deploy to clone without deploying, or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS.");
+        info("Set NOVA_PIN_KEY env var for non-interactive use.");
         earlyExit(1, "No Filecoin auth configured.");
       }
-      const chain = values.calibration ? "calibration" : "mainnet";
-      const url = sessionKeySigningUrl(chain);
+      const { acquireWalletAuth } = await import("./wallet-auth.js");
       console.log("");
-      info("No session key found. Create one in your browser:");
+      info("No wallet configured. Authorize Nova to use your wallet:");
       console.log("");
-      info(`  ${link(url)}`);
-      console.log("");
-      const { ask: askPrompt, close: closePrompt } = await import("./prompt.js");
-      const sk = await askPrompt(promptLabel("Session key:"));
-      if (!sk) {
-        closePrompt();
-        fail("Cannot deploy without a session key.");
-        info("Use --no-deploy to clone without deploying.");
-        earlyExit(1, "Cannot deploy without a session key.");
-      }
-      const wa = await askPrompt(promptLabel("Wallet address:"));
-      closePrompt();
-      if (!wa) {
-        fail("Wallet address is required.");
-        earlyExit(1, "Wallet address is required.");
-      }
-      config.sessionKey = sk;
-      config.walletAddress = wa;
-      process.env.NOVA_SESSION_KEY = sk;
-      process.env.NOVA_WALLET_ADDRESS = wa;
+      const auth = await acquireWalletAuth({
+        isMainnet,
+        onUrl: (url) => {
+          info(`  ${link(url)}`);
+          console.log("");
+          info(`${c.dim}Open the link above and approve with your wallet.${c.reset}`);
+        },
+        onProgress: (msg) => info(`${c.dim}${msg}${c.reset}`),
+      });
+      config.pinKey = auth.pinKey;
+      config.walletAddress = auth.walletAddress;
+      success("Wallet authorized!");
     }
 
     console.log("");
     const deployResult = await deploy({
       path: cloneResult.directory,
       pinKey: config.pinKey,
-      sessionKey: config.sessionKey,
       walletAddress: config.walletAddress,
       ensName,
       ensKey: config.ensKey,
@@ -1734,7 +1723,6 @@ async function runClone(args: string[]) {
       try {
         const cleanResult = await cleanPieces({
           pinKey: config.pinKey,
-          sessionKey: config.sessionKey,
           walletAddress: config.walletAddress,
           mainnet: isMainnet,
           keepCids: [deployResult.cid],
@@ -1918,7 +1906,7 @@ async function runDemo(args: string[]) {
     }
     console.log("");
     info(`${c.dim}This is a demo deploy on calibnet. For permanent hosting:${c.reset}`);
-    info(`${c.dim}1. Create a session key: ${c.cyan}https://session.focify.eth.limo${c.reset}`);
+    info(`${c.dim}1. Set up a wallet: ${c.cyan}https://fil.focify.eth.limo${c.reset}`);
     info(`${c.dim}2. Run: ${c.cyan}nova deploy${result.sourceUrl ? "" : " " + input}${c.reset}`);
     console.log("");
   }

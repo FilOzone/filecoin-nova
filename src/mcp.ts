@@ -7,9 +7,9 @@ import * as z from "zod/v4";
 import { deploy } from "./deploy.js";
 import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
 import { listPieces, cleanPieces, toCidV1 } from "./manage.js";
-import { resolveConfig, hasSessionKeyAuth, hasStorageAuth } from "./config.js";
-import { ensSigningUrl, sessionKeySigningUrl } from "./signing-url.js";
-import { pollEnsContenthash, pollSessionKeyRegistered, pollTxReceipt } from "./poll.js";
+import { resolveConfig, hasWalletAddress, hasStorageAuth } from "./config.js";
+import { ensSigningUrl } from "./signing-url.js";
+import { pollEnsContenthash, pollTxReceipt } from "./poll.js";
 import { CID } from "multiformats/cid";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -20,7 +20,7 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-
 
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value, (_key, val) =>
-    typeof val === "bigint" ? Number(val) : val, 2);
+    typeof val === "bigint" ? val.toString() : val, 2);
 }
 
 /**
@@ -66,19 +66,15 @@ server.registerTool(
     title: "Deploy to Filecoin",
     description:
       "Deploy a static website directory to Filecoin Onchain Cloud (mainnet). " +
-      "CRITICAL: DO NOT call this tool without sessionKey and walletAddress. " +
-      "If you don't have both values, ASK the user for them first. " +
-      "If the user has never used Nova or has no session key, use nova_demo instead (free, no auth). " +
-      "To get a session key: direct the user to https://session.focify.eth.limo " +
-      "Session keys are safe to paste in chat (scoped to storage only, cannot move funds). " +
+      "Requires NOVA_PIN_KEY env var for storage auth. " +
+      "If the user has no pin key, use nova_demo instead (free, no auth). " +
       "Optionally update an ENS domain to point to the deployed site. " +
       "Returns the IPFS CID and gateway URL. " +
       "This tool takes about 60 seconds to complete - do not retry if it seems slow. " +
       "If no ENS key is configured, returns a browser signing URL for the user to sign via MetaMask.",
     inputSchema: z.object({
       path: z.string().describe("Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) to deploy"),
-      sessionKey: z.string().optional().describe("Session key for Filecoin storage auth (safe to paste - scoped, cannot move funds)"),
-      walletAddress: z.string().optional().describe("Wallet address that owns the session key"),
+      walletAddress: z.string().optional().describe("Wallet address (overrides NOVA_WALLET_ADDRESS env var)"),
       ensName: z.string().optional().describe("ENS domain to point to the site (e.g. mysite.eth)"),
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
       providerId: z.number().optional().describe("Storage provider ID"),
@@ -91,23 +87,35 @@ server.registerTool(
     return redirectConsole(async () => {
       try {
         const config = resolveConfig(process.env);
-
-        // Tool params override config for session key auth
-        const sessionKey = params.sessionKey || config.sessionKey;
         const walletAddress = params.walletAddress || config.walletAddress;
-        const authConfig = { ...config, sessionKey, walletAddress };
+        const authConfig = { ...config, walletAddress };
 
         if (!hasStorageAuth(authConfig)) {
+          // Generate ephemeral key for wallet authorization
+          const { randomBytes } = await import("node:crypto");
+          const { privateKeyToAccount } = await import("viem/accounts");
+          const { walletAuthUrl } = await import("./signing-url.js");
+          const ephemeralKey = `0x${randomBytes(32).toString("hex")}`;
+          const ephemeralAddress = privateKeyToAccount(ephemeralKey as `0x${string}`).address;
+          const chainId = params.calibration ? 314159 : 314;
+          const url = walletAuthUrl(ephemeralKey, chainId);
+          const chain = chainId === 314 ? "mainnet" : "calibration";
+
           return {
-            isError: true,
-            content: [{ type: "text" as const, text: "No Filecoin auth found. Pass sessionKey + walletAddress params, or create a session key at https://session.focify.eth.limo\n\nTo try Nova instantly without any wallet, use the nova_demo tool instead." }],
+            content: [{ type: "text" as const, text: JSON.stringify({
+              status: "awaiting_wallet_auth",
+              signingUrl: url,
+              ephemeralAddress,
+              chain,
+              instructions: "Show this link to the user and ask them to open it and approve with their wallet. Then call nova_poll with operation 'wallet_auth', ephemeralAddress, and chain to check if authorization is complete. Once confirmed, retry nova_deploy with the returned walletAddress -- the ephemeral key will be authorized on-chain.",
+              _ephemeralKey: ephemeralKey,
+            }) }],
           };
         }
 
         const result = await deploy({
           path: params.path,
           pinKey: authConfig.pinKey,
-          sessionKey: authConfig.sessionKey,
           walletAddress: authConfig.walletAddress,
           ensName: params.ensName,
           ensKey: authConfig.ensKey,
@@ -145,7 +153,6 @@ server.registerTool(
           try {
             const cleanResult = await cleanPieces({
               pinKey: authConfig.pinKey,
-              sessionKey: authConfig.sessionKey,
               walletAddress: authConfig.walletAddress,
               mainnet: !params.calibration,
               keepCids: [result.cid],
@@ -182,9 +189,9 @@ server.registerTool(
       "The fastest way to deploy to Filecoin -- zero setup, no wallet, no credentials. " +
       "THIS IS THE RECOMMENDED STARTING POINT for any user who wants to deploy a website. " +
       "Clone any website by URL (e.g. 'filoz.org') or deploy a local directory/archive -- completely free. " +
-      "Uses an embedded calibnet session key so it works instantly out of the box. " +
+      "Uses an embedded calibnet key so it works instantly out of the box. " +
       "Returns an IPFS CID and gateway URL where the site is immediately accessible. " +
-      "After the demo, guide the user to permanent mainnet hosting: create a session key at https://session.focify.eth.limo then use nova_deploy.",
+      "After the demo, guide the user to permanent mainnet hosting: set NOVA_PIN_KEY or sign via https://fil.focify.eth.limo then use nova_deploy.",
     inputSchema: z.object({
       path: z.string().describe("URL to clone (e.g. 'filoz.org') or path to a directory/archive to deploy"),
       maxPages: z.number().optional().describe("Max pages to crawl when cloning a URL (default: 50)"),
@@ -202,7 +209,7 @@ server.registerTool(
           directory: result.directory,
           network: "calibration",
           demo: true,
-          permanentHosting: "For permanent hosting, create a session key at https://session.focify.eth.limo and use nova_deploy with sessionKey + walletAddress params.",
+          permanentHosting: "For permanent hosting, set NOVA_PIN_KEY env var (or sign via browser at https://fil.focify.eth.limo) and use nova_deploy.",
         };
 
         return {
@@ -305,7 +312,7 @@ server.registerTool(
       "Check the current ENS contenthash for a domain. " +
       "Returns the contenthash, eth.limo URL, and pin status if auth is available. " +
       "Pin status shows how many active/removing pieces back this CID. " +
-      "No auth needed for the ENS check, but pin status requires sessionKey + walletAddress.",
+      "No auth needed for the ENS check, but pin status requires NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY).",
     inputSchema: z.object({
       ensName: z.string().describe("ENS domain to check (e.g. mysite.eth)"),
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
@@ -338,12 +345,12 @@ server.registerTool(
           ...(cid && { cid }),
         };
 
-        // Add pin status if auth is available
-        if (cid && hasStorageAuth(config)) {
+        // Add pin status if wallet address is available
+        if (cid && hasWalletAddress(config)) {
           try {
             let cidV1: string;
             try { cidV1 = CID.parse(cid).toV1().toString(); } catch { cidV1 = cid; }
-            const summaries = await listPieces({ pinKey: config.pinKey, sessionKey: config.sessionKey, walletAddress: config.walletAddress, mainnet: true });
+            const summaries = await listPieces({ pinKey: config.pinKey, walletAddress: config.walletAddress, mainnet: true });
             for (const ds of summaries) {
               const group = ds.groups.find((g) => {
                 try { return CID.parse(g.ipfsRootCID).toV1().toString() === cidV1; } catch { return g.ipfsRootCID === cid; }
@@ -391,10 +398,9 @@ server.registerTool(
       "Each group has 'activePieces' (not pending removal) and 'duplicateActivePieces' (active copies beyond the first - these are redundant and can be removed with nova_manage_clean). " +
       "Only 1 active piece per CID is needed. If duplicateActivePieces > 0, suggest cleanup. " +
       "Pieces with pendingRemoval=true are already scheduled for deletion. " +
-      "Auth: pass sessionKey + walletAddress params, or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars.",
+      "Auth: set NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY) env var.",
     inputSchema: z.object({
-      sessionKey: z.string().optional().describe("Session key for Filecoin storage auth (safe to paste - scoped, cannot move funds)"),
-      walletAddress: z.string().optional().describe("Wallet address that owns the session key"),
+      walletAddress: z.string().optional().describe("Wallet address (overrides NOVA_WALLET_ADDRESS env var)"),
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
   },
@@ -402,20 +408,18 @@ server.registerTool(
     return redirectConsole(async () => {
       try {
         const config = resolveConfig(process.env);
-        const sessionKey = params.sessionKey || config.sessionKey;
         const walletAddress = params.walletAddress || config.walletAddress;
-        const authConfig = { ...config, sessionKey, walletAddress };
+        const authConfig = { ...config, walletAddress };
 
-        if (!hasStorageAuth(authConfig)) {
+        if (!hasWalletAddress(authConfig)) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "No Filecoin auth found. Pass sessionKey + walletAddress params, or create a session key at https://session.focify.eth.limo" }],
+            content: [{ type: "text" as const, text: "No wallet address found. Set NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY) env var." }],
           };
         }
 
         const summaries = await listPieces({
           pinKey: authConfig.pinKey,
-          sessionKey: authConfig.sessionKey,
           walletAddress: authConfig.walletAddress,
           mainnet: !params.calibration,
         });
@@ -445,11 +449,10 @@ server.registerTool(
       "Use 'keepCids' to keep specific CIDs, or 'removeCids' to remove specific CIDs. " +
       "WARNING: This permanently deletes pieces. Always run nova_manage first to review. " +
       "Each piece requires a separate transaction - this may take a while for many pieces. " +
-      "Auth: pass sessionKey + walletAddress params, or set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars. " +
+      "Auth: set NOVA_PIN_KEY env var. " +
       "ALWAYS confirm with the user before calling this tool.",
     inputSchema: z.object({
-      sessionKey: z.string().optional().describe("Session key for Filecoin storage auth (safe to paste - scoped, cannot move funds)"),
-      walletAddress: z.string().optional().describe("Wallet address that owns the session key"),
+      walletAddress: z.string().optional().describe("Wallet address (overrides NOVA_WALLET_ADDRESS env var)"),
       keepCids: z.string().optional().describe("Comma-separated CIDs to keep (removes everything else)"),
       removeCids: z.string().optional().describe("Comma-separated CIDs to remove (keeps everything else)"),
       keepCopies: z.boolean().optional().describe("Keep all copies of the same content (default: false, duplicates are removed)"),
@@ -461,14 +464,29 @@ server.registerTool(
     return redirectConsole(async () => {
       try {
         const config = resolveConfig(process.env);
-        const sessionKey = params.sessionKey || config.sessionKey;
         const walletAddress = params.walletAddress || config.walletAddress;
-        const authConfig = { ...config, sessionKey, walletAddress };
+        const authConfig = { ...config, walletAddress };
 
         if (!hasStorageAuth(authConfig)) {
+          const { randomBytes } = await import("node:crypto");
+          const { privateKeyToAccount } = await import("viem/accounts");
+          const { walletAuthUrl } = await import("./signing-url.js");
+          const ephemeralKey = `0x${randomBytes(32).toString("hex")}`;
+          const ephemeralAddress = privateKeyToAccount(ephemeralKey as `0x${string}`).address;
+          const isCalibration = params.calibration;
+          const chainId = isCalibration ? 314159 : 314;
+          const url = walletAuthUrl(ephemeralKey, chainId);
+          const chain = isCalibration ? "calibration" : "mainnet";
+
           return {
-            isError: true,
-            content: [{ type: "text" as const, text: "No Filecoin auth found. Pass sessionKey + walletAddress params, or create a session key at https://session.focify.eth.limo" }],
+            content: [{ type: "text" as const, text: JSON.stringify({
+              status: "awaiting_wallet_auth",
+              signingUrl: url,
+              ephemeralAddress,
+              chain,
+              instructions: "Show this link to the user and ask them to open it and approve with their wallet. Then call nova_poll with operation 'wallet_auth', ephemeralAddress, and chain to check if authorization is complete.",
+              _ephemeralKey: ephemeralKey,
+            }) }],
           };
         }
 
@@ -484,7 +502,6 @@ server.registerTool(
 
         const result = await cleanPieces({
           pinKey: authConfig.pinKey,
-          sessionKey: authConfig.sessionKey,
           walletAddress: authConfig.walletAddress,
           mainnet: !params.calibration,
           keepCids,
@@ -524,21 +541,21 @@ server.registerTool(
       "Poll on-chain state to check if a browser-signed transaction has completed. " +
       "Use after nova_ens or nova_deploy returns a signing URL. " +
       "Operations: 'ens_update' checks if ENS contenthash matches target CID, " +
-      "'session_key' checks if a session key is registered, " +
-      "'tx_receipt' checks if a transaction hash has been mined. " +
+      "'tx_receipt' checks if a transaction hash has been mined, " +
+      "'wallet_auth' checks if wallet authorization is complete. " +
       "Call this once -- if confirmed is false, wait a few seconds and call again.",
     inputSchema: z.object({
-      operation: z.enum(["ens_update", "session_key", "tx_receipt"]).describe("Type of operation to poll for"),
+      operation: z.enum(["ens_update", "tx_receipt", "wallet_auth"]).describe("Type of operation to poll for"),
       ensName: z.string().optional().describe("ENS domain (for ens_update)"),
       targetCid: z.string().optional().describe("Expected CID (for ens_update)"),
-      sessionAddress: z.string().optional().describe("Session key address (for session_key)"),
-      walletAddress: z.string().optional().describe("Root wallet address (for session_key)"),
-      chain: z.enum(["mainnet", "calibration", "ethereum"]).optional().describe("Chain to poll (for session_key and tx_receipt)"),
+      chain: z.enum(["mainnet", "calibration", "ethereum"]).optional().describe("Chain to poll (for tx_receipt or wallet_auth)"),
       txHash: z.string().optional().describe("Transaction hash (for tx_receipt)"),
+      ephemeralAddress: z.string().optional().describe("Ephemeral key address (for wallet_auth)"),
       rpcUrl: z.string().optional().describe("RPC URL override"),
     }),
   },
   async (params): Promise<CallToolResult> => {
+    return redirectConsole(async () => {
     try {
       let result;
 
@@ -553,17 +570,6 @@ server.registerTool(
           result = await pollEnsContenthash(params.ensName, params.targetCid, params.rpcUrl);
           break;
         }
-        case "session_key": {
-          if (!params.sessionAddress || !params.walletAddress) {
-            return {
-              isError: true,
-              content: [{ type: "text" as const, text: "sessionAddress and walletAddress are required for session_key polling" }],
-            };
-          }
-          const skChain = (params.chain === "mainnet" || params.chain === "calibration") ? params.chain : "calibration";
-          result = await pollSessionKeyRegistered(params.sessionAddress, params.walletAddress, skChain);
-          break;
-        }
         case "tx_receipt": {
           if (!params.txHash) {
             return {
@@ -573,6 +579,18 @@ server.registerTool(
           }
           const txChain = (params.chain === "mainnet" || params.chain === "calibration" || params.chain === "ethereum") ? params.chain : "ethereum";
           result = await pollTxReceipt(params.txHash, txChain);
+          break;
+        }
+        case "wallet_auth": {
+          if (!params.ephemeralAddress) {
+            return {
+              isError: true,
+              content: [{ type: "text" as const, text: "ephemeralAddress is required for wallet_auth polling" }],
+            };
+          }
+          const authChain = (params.chain === "mainnet" || params.chain === "calibration") ? params.chain : "mainnet";
+          const { pollWalletAuth } = await import("./poll.js");
+          result = await pollWalletAuth(params.ephemeralAddress, authChain);
           break;
         }
       }
@@ -586,6 +604,7 @@ server.registerTool(
         content: [{ type: "text" as const, text: err.message }],
       };
     }
+    });
   }
 );
 
@@ -655,11 +674,10 @@ server.registerTool(
     title: "Deployment Info",
     description:
       "Show details for a specific IPFS CID deployment: dataset, pieces, size, proof status. " +
-      "Requires sessionKey + walletAddress.",
+      "Requires NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY) env var.",
     inputSchema: z.object({
       cid: z.string().describe("IPFS CID to look up"),
-      sessionKey: z.string().optional().describe("Filecoin session key (hex)"),
-      walletAddress: z.string().optional().describe("Filecoin wallet address (0x...)"),
+      walletAddress: z.string().optional().describe("Wallet address (overrides NOVA_WALLET_ADDRESS env var)"),
       mainnet: z.boolean().optional().describe("Use mainnet (default: true)"),
     }),
   },
@@ -667,13 +685,12 @@ server.registerTool(
     return redirectConsole(async () => {
       try {
         const config = resolveConfig(process.env);
-        const sessionKey = params.sessionKey || config.sessionKey;
         const walletAddress = params.walletAddress || config.walletAddress;
 
-        if (!sessionKey && !config.pinKey) {
+        if (!hasWalletAddress({ ...config, walletAddress })) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "sessionKey + walletAddress required. Create a session key at https://session.focify.eth.limo" }],
+            content: [{ type: "text" as const, text: "No wallet address found. Set NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY) env var." }],
           };
         }
 
@@ -682,7 +699,6 @@ server.registerTool(
 
         const summaries = await listPieces({
           pinKey: config.pinKey,
-          sessionKey,
           walletAddress,
           mainnet: isMainnet,
         });
@@ -742,10 +758,9 @@ server.registerTool(
     title: "Wallet Balance",
     description:
       "Show FIL and USDFC balance for the configured wallet, plus FOC deposit status. " +
-      "Requires sessionKey + walletAddress.",
+      "Requires NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY) env var.",
     inputSchema: z.object({
-      sessionKey: z.string().optional().describe("Filecoin session key (hex)"),
-      walletAddress: z.string().optional().describe("Filecoin wallet address (0x...)"),
+      walletAddress: z.string().optional().describe("Wallet address (overrides NOVA_WALLET_ADDRESS env var)"),
       mainnet: z.boolean().optional().describe("Use mainnet (default: true)"),
     }),
   },
@@ -753,25 +768,26 @@ server.registerTool(
     return redirectConsole(async () => {
       try {
         const config = resolveConfig(process.env);
-        const sessionKey = params.sessionKey || config.sessionKey;
         const walletAddress = params.walletAddress || config.walletAddress;
 
-        if (!sessionKey && !config.pinKey) {
+        if (!hasWalletAddress({ ...config, walletAddress })) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "sessionKey + walletAddress required. Create a session key at https://session.focify.eth.limo" }],
+            content: [{ type: "text" as const, text: "No wallet address found. Set NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY) env var." }],
           };
         }
 
         const isMainnet = params.mainnet !== false;
-        const { createSynapse, resolveWalletAddress } = await import("./auth.js");
+        const { createSynapse, createReadOnlySynapse, resolveWalletAddress } = await import("./auth.js");
         const { getBalance } = await import("viem/actions");
         const { balance: erc20Balance } = await import("@filoz/synapse-core/erc20");
         const { accounts: payAccounts } = await import("@filoz/synapse-core/pay");
 
-        const auth = { pinKey: config.pinKey, sessionKey, walletAddress };
+        const auth = { pinKey: config.pinKey, walletAddress };
         const walletAddr = resolveWalletAddress(auth);
-        const synapse = createSynapse(auth, isMainnet);
+        const synapse = config.pinKey
+          ? createSynapse(auth, isMainnet)
+          : createReadOnlySynapse(walletAddr, isMainnet);
 
         const [filBalance, usdfcInfo, depositInfo] = await Promise.all([
           getBalance(synapse.client, { address: walletAddr }).catch(() => null),
@@ -792,9 +808,9 @@ server.registerTool(
           fil: filBalance !== null ? formatToken(filBalance, 18) : null,
           usdfc: usdfcInfo ? { balance: formatToken(usdfcInfo.value, usdfcInfo.decimals), symbol: usdfcInfo.symbol } : null,
           deposit: depositInfo ? {
-            funds: formatToken(depositInfo.funds, 6),
-            available: formatToken(depositInfo.availableFunds, 6),
-            locked: formatToken(depositInfo.lockupCurrent, 6),
+            funds: formatToken(depositInfo.funds, usdfcInfo?.decimals ?? 18),
+            available: formatToken(depositInfo.availableFunds, usdfcInfo?.decimals ?? 18),
+            locked: formatToken(depositInfo.lockupCurrent, usdfcInfo?.decimals ?? 18),
           } : null,
         };
 
@@ -830,7 +846,7 @@ server.registerTool(
         const { mkdirSync, createWriteStream, unlinkSync } = await import("node:fs");
         const { pipeline } = await import("node:stream/promises");
         const { Readable } = await import("node:stream");
-        const { execSync } = await import("node:child_process");
+        const { execFileSync } = await import("node:child_process");
         const { tmpdir } = await import("node:os");
         const { resolve, join } = await import("node:path");
 
@@ -882,9 +898,12 @@ server.registerTool(
         const fileStream = createWriteStream(tarPath);
         await pipeline(nodeStream, fileStream);
 
-        mkdirSync(outDir, { recursive: true });
-        execSync(`tar xf "${tarPath}" --strip-components=1 -C "${outDir}"`, { stdio: "pipe" });
-        unlinkSync(tarPath);
+        try {
+          mkdirSync(outDir, { recursive: true });
+          execFileSync("tar", ["xf", tarPath, "--strip-components=1", "-C", outDir], { stdio: "pipe" });
+        } finally {
+          unlinkSync(tarPath);
+        }
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ cid: cidStr, directory: outDir, size: downloaded }, null, 2) }],

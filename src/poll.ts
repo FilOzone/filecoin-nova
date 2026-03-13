@@ -23,10 +23,6 @@ const ENS_RPC_URLS = [
   "https://eth.merkle.io",
 ];
 
-const RESOLVER_ABI = [
-  "function contenthash(bytes32 node) external view returns (bytes)",
-];
-
 /**
  * Poll ENS contenthash until it matches the target CID.
  */
@@ -98,54 +94,24 @@ export async function pollEnsContenthash(
   }
 }
 
-// --- Session key registration polling ---
+const FIL_RPC: Record<string, string> = {
+  mainnet: "https://api.node.glif.io/rpc/v1",
+  calibration: "https://api.calibration.node.glif.io/rpc/v1",
+};
+
+// --- Wallet authorization polling ---
 
 const SESSION_KEY_REGISTRY: Record<string, `0x${string}`> = {
   mainnet: "0x74FD50525A958aF5d484601E252271f9625231aB",
   calibration: "0x518411c2062E119Aaf7A8B12A2eDf9a939347655",
 };
 
-const FIL_RPC: Record<string, string> = {
-  mainnet: "https://api.node.glif.io/rpc/v1",
-  calibration: "https://api.calibration.node.glif.io/rpc/v1",
-};
-
-// The SessionKeyRegistry stores login data. We check if a session key address
-// has been registered for a given root wallet by reading the signerToRoot mapping.
-// If no view function exists, we fall back to checking recent Login events.
-const REGISTRY_ABI = [
-  {
-    type: "function",
-    name: "login",
-    inputs: [
-      { name: "signer", type: "address" },
-      { name: "expiry", type: "uint256" },
-      { name: "permissions", type: "bytes32[]" },
-      { name: "origin", type: "string" },
-    ],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "event",
-    name: "Login",
-    inputs: [
-      { name: "root", type: "address", indexed: true },
-      { name: "signer", type: "address", indexed: true },
-      { name: "expiry", type: "uint256", indexed: false },
-      { name: "permissions", type: "bytes32[]", indexed: false },
-      { name: "origin", type: "string", indexed: false },
-    ],
-  },
-] as const;
-
 /**
- * Poll whether a session key address has been registered on the SessionKeyRegistry.
- * Checks by scanning recent Login events for the session address.
+ * Poll whether an ephemeral key has been authorized on-chain.
+ * Returns the wallet address that authorized it (from the Login event).
  */
-export async function pollSessionKeyRegistered(
-  sessionAddress: string,
-  walletAddress: string,
+export async function pollWalletAuth(
+  ephemeralAddress: string,
   chain: "mainnet" | "calibration"
 ): Promise<PollResult> {
   const registryAddr = SESSION_KEY_REGISTRY[chain];
@@ -159,23 +125,20 @@ export async function pollSessionKeyRegistered(
     const viemChain = chain === "mainnet" ? filecoin : filecoinCalibration;
     const client = createClient({ chain: viemChain, transport: http(rpcUrl) });
 
-    // Get recent block number and scan last ~2000 blocks (~17 hours at 30s blocks)
-    // Session key registration should be very recent (user just signed it)
     const latestBlock = await client.request({ method: "eth_blockNumber" });
     const latest = Number(latestBlock);
     const fromBlock = `0x${Math.max(0, latest - 2000).toString(16)}` as `0x${string}`;
 
-    // Check for Login events where the signer matches
+    // Login event: Login(address indexed root, address indexed signer, ...)
     const logs = await client.request({
       method: "eth_getLogs",
       params: [
         {
           address: registryAddr,
-          // Login event topic + indexed signer as second topic
           topics: [
-            null, // Login event signature (any)
-            null, // root (any)
-            `0x000000000000000000000000${sessionAddress.slice(2).toLowerCase()}` as `0x${string}`,
+            null, // Login event signature
+            null, // root (any -- we extract this)
+            `0x000000000000000000000000${ephemeralAddress.slice(2).toLowerCase()}` as `0x${string}`,
           ],
           fromBlock,
           toBlock: "latest",
@@ -183,22 +146,25 @@ export async function pollSessionKeyRegistered(
       ],
     });
 
-    if (logs && (logs as unknown[]).length > 0) {
+    if (logs && (logs as any[]).length > 0) {
+      // Extract wallet address from the first indexed topic (root)
+      const log = (logs as any[])[0];
+      const rootTopic = log.topics?.[1] as string;
+      const walletAddress = rootTopic
+        ? `0x${rootTopic.slice(26)}` as `0x${string}`
+        : undefined;
+
       return {
         confirmed: true,
         result: {
-          sessionAddress,
           walletAddress,
+          ephemeralAddress,
           chain,
-          message: "Session key registered on-chain",
         },
       };
     }
 
-    return {
-      confirmed: false,
-      result: { sessionAddress, walletAddress, chain },
-    };
+    return { confirmed: false };
   } catch (err: any) {
     return { confirmed: false, error: err.message };
   }

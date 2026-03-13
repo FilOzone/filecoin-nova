@@ -15,7 +15,6 @@ import { success, info, c, gutterTop, gutterBottom, gutterLine, formatSize } fro
 
 export interface UploadConfig {
   directory: string;
-  sessionKey?: string;
   walletAddress?: string;
   pinKey?: string;
   providerId?: number;
@@ -37,7 +36,6 @@ export interface UploadResult {
  */
 export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
   const auth: StorageAuth = {
-    sessionKey: config.sessionKey,
     walletAddress: config.walletAddress,
     pinKey: config.pinKey,
   };
@@ -89,6 +87,12 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
       metadata: { withIPFSIndexing: "" },  // Dataset-level: enables IPNI advertisement for gateway retrieval
       count: 1,  // Single copy (matches filecoin-pin behavior)
       callbacks: {
+        onProviderSelected: (provider: any) => {
+          gutterLine(`Provider: ${provider.id}${provider.pdp?.serviceURL ? ` (${new URL(provider.pdp.serviceURL).hostname})` : ""}`);
+        },
+        onDataSetResolved: (info: any) => {
+          gutterLine(`Dataset: ${info.dataSetId}${info.isNew ? " (new)" : ""}`);
+        },
         onProgress: (bytesUploaded: number) => {
           if (!process.stderr.isTTY) return;
           const pct = Math.min(100, Math.round((bytesUploaded / carSize) * 100));
@@ -97,6 +101,19 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
           const bar = "\u2588".repeat(filled) + "\u2591".repeat(barW - filled);
           process.stderr.write(`\r  ${c.dim}\u2503${c.reset}  ${bar} ${pct}% (${formatSize(bytesUploaded)} / ${formatSize(carSize)})`);
         },
+        onStored: () => {
+          if (process.stderr.isTTY) {
+            process.stderr.write("\r" + " ".repeat(80) + "\r");
+          }
+          gutterLine("Upload complete, committing on-chain...");
+        },
+        onPiecesAdded: (txHash: string) => {
+          gutterLine(`Transaction sent: ${txHash.slice(0, 14)}...`);
+          gutterLine("Waiting for confirmation...");
+        },
+        onPiecesConfirmed: () => {
+          gutterLine("Confirmed on-chain");
+        },
       },
     };
     if (config.providerId !== undefined) {
@@ -104,15 +121,11 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
     }
 
     const result = await manager.upload(carStream as any, uploadOptions);
-    if (process.stderr.isTTY) {
-      process.stderr.write("\r" + " ".repeat(80) + "\r");
-    }
     const copy = result.copies[0];
     gutterLine(`Piece CID: ${result.pieceCid}`);
     if (copy) {
-      gutterLine(`Dataset: ${copy.dataSetId}${copy.isNewDataSet ? " (new)" : ""}, Piece ID: ${copy.pieceId}`);
+      gutterLine(`Piece ID: ${copy.pieceId}`);
     }
-    gutterLine("On-chain: confirmed");
     gutterBottom();
     console.log("");
     success(`Deployed: ${c.bold}${rootCidStr}${c.reset}`);

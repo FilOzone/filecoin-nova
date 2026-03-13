@@ -5,7 +5,6 @@
 
 export interface ResolvedConfig {
   pinKey?: string;
-  sessionKey?: string;
   walletAddress?: string;
   ensKey?: string;
   ensName?: string;
@@ -31,7 +30,6 @@ export function resolveConfig(env: NodeJS.ProcessEnv): ResolvedConfig {
 
   return {
     pinKey: env.NOVA_PIN_KEY,
-    sessionKey: env.NOVA_SESSION_KEY,
     walletAddress: env.NOVA_WALLET_ADDRESS,
     ensKey: env.NOVA_ENS_KEY,
     ensName: env.NOVA_ENS_NAME,
@@ -41,15 +39,15 @@ export function resolveConfig(env: NodeJS.ProcessEnv): ResolvedConfig {
 }
 
 /**
- * Check if config has session key auth (session key + wallet address).
+ * Check if config has a wallet address (for read-only operations).
  */
-export function hasSessionKeyAuth(config: ResolvedConfig): boolean {
-  return !!(config.sessionKey && config.walletAddress);
+export function hasWalletAddress(config: ResolvedConfig): boolean {
+  return !!config.walletAddress || !!config.pinKey;
 }
 
 /**
- * Check if config has any Filecoin storage auth (session key or raw key).
+ * Check if config has full signing auth (for write operations).
  */
 export function hasStorageAuth(config: ResolvedConfig): boolean {
-  return hasSessionKeyAuth(config) || !!config.pinKey;
+  return !!config.pinKey;
 }

@@ -7,7 +7,6 @@
 // Embedded calibnet session key (safe to publish -- scoped, calibnet only)
 export const DEMO_SESSION_KEY = "0x7b029c6a96fdd59a3276749b2cea67497eda13d19176ae1c8be7c39cf37a807a";
 export const DEMO_WALLET_ADDRESS = "0x12e83c954051b7c91f70d001f80dc9ff91737b83";
-export const DEMO_NETWORK = "calibration";
 
 export interface DemoResult {
   cid: string;
@@ -61,7 +60,7 @@ export async function demoDeploy(input: string, opts?: { maxPages?: number; prov
   try {
     result = await deploy({
       path: deployPath,
-      sessionKey: DEMO_SESSION_KEY,
+      pinKey: DEMO_SESSION_KEY,
       walletAddress: DEMO_WALLET_ADDRESS,
       mainnet: false,
       providerId: opts?.providerId,
@@ -72,8 +71,8 @@ export async function demoDeploy(input: string, opts?: { maxPages?: number; prov
       throw new Error(
         "Demo wallet is out of funds.\n\n" +
           "  The shared demo wallet has run out of calibnet USDFC.\n" +
-          "  For permanent hosting, create your own session key at:\n" +
-          "  https://session.focify.eth.limo"
+          "  For permanent hosting, set NOVA_PIN_KEY or sign via:\n" +
+          "  https://fil.focify.eth.limo"
       );
     }
     throw err;

@@ -159,30 +159,45 @@ Nova is designed so you never need to paste private keys.
 
 `nova demo` works instantly. Free, calibration testnet, no wallet needed.
 
-### Session keys (permanent hosting)
+### Private key (permanent hosting)
 
-Session keys are scoped to storage operations only -- they cannot move funds, making them safe to use in AI chat sessions.
-
-1. Go to [session.focify.eth.limo](https://session.focify.eth.limo)
-2. Connect MetaMask (Filecoin network)
-3. Sign the transaction
-4. Use the session key with Nova
+For deploys and storage management, set `NOVA_PIN_KEY` with your Filecoin private key:
 
 ```bash
+export NOVA_PIN_KEY=0x...
 nova deploy ./dist
-# Nova prompts for session key + wallet address
 ```
 
-Or set as env vars for automation:
+### Browser signing (no keys on disk)
+
+If you prefer not to store a private key, Nova can open a browser page where you sign with MetaMask -- no keys to copy or paste:
+
 ```bash
-export NOVA_SESSION_KEY=0x...
+# Deploy via browser signing
+nova deploy ./dist
+# Opens https://fil.focify.eth.limo, waits for confirmation
+```
+
+This works for any write operation (deploy, clean). Your key never leaves the browser.
+
+### Read-only access
+
+Commands like `nova manage`, `nova info`, and `nova wallet` only need a wallet address -- no private key:
+
+```bash
 export NOVA_WALLET_ADDRESS=0x...
-nova deploy ./dist
+nova manage
 ```
 
-### Browser signing (ENS)
+Or pass it as a flag:
 
-ENS updates require an Ethereum wallet. Nova opens a browser page where you sign with MetaMask -- no keys to copy:
+```bash
+nova manage --wallet 0x...
+```
+
+### ENS updates
+
+ENS updates require an Ethereum wallet. Nova opens a browser page where you sign with MetaMask:
 
 ```bash
 # Check what an ENS domain points to
@@ -193,16 +208,22 @@ nova ens bafybei... --ens mysite.eth
 # Opens signing page, waits for confirmation
 ```
 
+Or set `NOVA_ENS_KEY` for automated ENS updates in CI:
+
+```bash
+export NOVA_ENS_KEY=0x...
+nova ens bafybei... --ens mysite.eth
+```
+
 ### Environment variables
 
 For CI/automation:
 
 | Variable | What it does |
 |----------|-------------|
-| `NOVA_SESSION_KEY` | Session key for storage auth |
-| `NOVA_WALLET_ADDRESS` | Wallet address for session key |
-| `NOVA_PIN_KEY` | Raw Filecoin private key (CI fallback) |
-| `NOVA_ENS_KEY` | Ethereum private key for ENS |
+| `NOVA_PIN_KEY` | Filecoin private key (deploy, clean) |
+| `NOVA_WALLET_ADDRESS` | Wallet address (read-only: manage, info, wallet) |
+| `NOVA_ENS_KEY` | Ethereum private key for ENS updates |
 | `NOVA_ENS_NAME` | Default ENS domain |
 | `NOVA_RPC_URL` | Custom Ethereum RPC |
 | `NOVA_PROVIDER_ID` | Storage provider ID |
@@ -282,6 +303,7 @@ For **permanent hosting**:
 | `--rpc-url <url>` | clone, deploy, ens | Custom Ethereum RPC |
 | `--provider-id <id>` | clone, deploy | Storage provider ID |
 | `--clean` | clone, deploy | Remove all previous versions after deploy |
+| `-w, --wallet <addr>` | info, wallet, manage | Wallet address for read-only commands |
 | `--calibration` | clone, deploy, info, wallet, manage | Use testnet instead of mainnet |
 | `--json` | clone, deploy, ens, info, wallet, download, manage | Machine-readable JSON output |
 | `--really-do-it` | manage clean | Execute the cleanup |
@@ -296,8 +318,7 @@ For **permanent hosting**:
 
 ```yaml
 env:
-  NOVA_SESSION_KEY: ${{ secrets.NOVA_SESSION_KEY }}
-  NOVA_WALLET_ADDRESS: ${{ secrets.NOVA_WALLET_ADDRESS }}
+  NOVA_PIN_KEY: ${{ secrets.NOVA_PIN_KEY }}
 
 steps:
   - run: npx filecoin-nova deploy ./dist --json
@@ -312,8 +333,7 @@ import { deploy } from "filecoin-nova";
 
 const result = await deploy({
   path: "./public",
-  sessionKey: process.env.NOVA_SESSION_KEY,
-  walletAddress: process.env.NOVA_WALLET_ADDRESS,
+  pinKey: process.env.NOVA_PIN_KEY,
   ensName: "mysite.eth",
   ensKey: process.env.NOVA_ENS_KEY,
 });

@@ -1,21 +1,18 @@
 /**
  * Shared Filecoin auth utilities for synapse-sdk.
  *
- * Handles session key and private key authentication modes.
- * Session key auth uses the root wallet address as the main client
- * (for dataset lookups/ownership) and the session key as the session
- * client (for signing addPieces, createDataSet, deletePiece, etc.).
+ * Two modes:
+ * - Full auth (pinKey): signing client for uploads, deletes, etc.
+ * - Read-only (walletAddress only): queries datasets, balances, etc.
  */
 
 import { Synapse, mainnet, calibration } from "@filoz/synapse-sdk";
-import { fromSecp256k1 } from "@filoz/synapse-core/session-key";
 import { privateKeyToAccount } from "viem/accounts";
 import { createClient, http } from "viem";
 import type { Hex, Address } from "viem";
 
 export interface StorageAuth {
   pinKey?: string;
-  sessionKey?: string;
   walletAddress?: string;
 }
 
@@ -24,34 +21,21 @@ export function ensureHexKey(key: string): Hex {
 }
 
 export function resolveWalletAddress(auth: StorageAuth): Address {
-  if (auth.sessionKey && auth.walletAddress) {
+  if (auth.walletAddress) {
     return auth.walletAddress as Address;
   }
   if (auth.pinKey) {
     return privateKeyToAccount(ensureHexKey(auth.pinKey)).address;
   }
-  throw new Error("No Filecoin auth configured.");
+  throw new Error("No wallet address configured. Set NOVA_WALLET_ADDRESS env var.");
 }
 
+/**
+ * Create a Synapse instance with full signing capability.
+ * Required for write operations (upload, delete).
+ */
 export function createSynapse(auth: StorageAuth, isMainnet: boolean): Synapse {
   const chain = isMainnet ? mainnet : calibration;
-
-  if (auth.sessionKey && auth.walletAddress) {
-    const sessionKeyObj = fromSecp256k1({
-      privateKey: ensureHexKey(auth.sessionKey),
-      root: auth.walletAddress as Address,
-      chain,
-    });
-    // Use root wallet address as the main client so that dataset lookups
-    // (getClientDataSets, ownership checks) resolve against the correct address.
-    // The session key client handles signing (addPieces, createDataSet, etc.).
-    const client = createClient({
-      chain,
-      transport: http(),
-      account: auth.walletAddress as Address,
-    });
-    return new Synapse({ client, sessionClient: sessionKeyObj.client });
-  }
 
   if (auth.pinKey) {
     const account = privateKeyToAccount(ensureHexKey(auth.pinKey));
@@ -59,8 +43,23 @@ export function createSynapse(auth: StorageAuth, isMainnet: boolean): Synapse {
   }
 
   throw new Error(
-    "No Filecoin auth configured.\n\n" +
-      "  Set NOVA_SESSION_KEY + NOVA_WALLET_ADDRESS env vars,\n" +
-      "  or create a session key at https://session.focify.eth.limo",
+    "No Filecoin private key configured.\n\n" +
+      "  Set NOVA_PIN_KEY env var, or sign via browser at https://fil.focify.eth.limo",
   );
+}
+
+/**
+ * Create a read-only Synapse instance from just a wallet address.
+ * For queries only (listPieces, getBalance, etc.). Cannot sign.
+ *
+ * Note: do NOT pass account to createClient -- viem uses it as `from` in
+ * eth_call, and Filecoin FVM rejects calls from non-existent actors.
+ */
+export function createReadOnlySynapse(walletAddress: string, isMainnet: boolean): Synapse {
+  const chain = isMainnet ? mainnet : calibration;
+  const client = createClient({
+    chain,
+    transport: http(),
+  });
+  return new Synapse({ client } as any);
 }

@@ -15,7 +15,6 @@ export interface DeployConfig {
   /** Path to a directory or archive (.zip, .tar.gz, .tgz, .tar) */
   path: string;
   pinKey?: string;
-  sessionKey?: string;
   walletAddress?: string;
   ensName?: string;
   ensKey?: string;
@@ -118,7 +117,6 @@ export async function deploy(config: DeployConfig): Promise<DeployResult> {
       directory: deployDir,
       providerId: config.providerId,
       mainnet: config.mainnet,
-      sessionKey: config.sessionKey,
       walletAddress: config.walletAddress,
       pinKey: config.pinKey,
       label: config.label || basename(deployDir),

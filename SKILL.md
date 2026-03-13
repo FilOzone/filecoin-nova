@@ -10,8 +10,9 @@ Nova deploys static websites to Filecoin Onchain Cloud (decentralized IPFS hosti
 ## Golden Rules
 
 1. **`nova_demo`, `nova_clone`, and `nova_download` need NO auth.** They work instantly with zero setup. `nova_demo` is free and the recommended starting point for new users.
-2. **`nova_deploy`, `nova_manage`, `nova_manage_clean`, `nova_info`, and `nova_wallet` REQUIRE `sessionKey` + `walletAddress`.** NEVER call these tools without both values. If you don't have them, ASK the user first -- do not call the tool and let it fail. Direct the user to https://session.focify.eth.limo to create a session key (safe to paste in chat).
-3. **`nova_status` and `nova_ens` need NO auth** for basic lookups. `nova_ens` needs an ENS key or returns a browser signing URL.
+2. **`nova_deploy` and `nova_manage_clean` REQUIRE `NOVA_PIN_KEY` env var** (or browser signing via https://fil.focify.eth.limo). NEVER call these tools without auth configured. If the user hasn't set `NOVA_PIN_KEY`, tell them to set it or use browser signing.
+3. **`nova_info`, `nova_wallet`, and `nova_manage` (list) only need a wallet address** -- pass `walletAddress` param or set `NOVA_WALLET_ADDRESS` env var. These are read-only operations.
+4. **`nova_status` and `nova_ens` need NO auth** for basic lookups. `nova_ens` needs `NOVA_ENS_KEY` or returns a browser signing URL.
 
 ## Tools
 
@@ -29,21 +30,19 @@ Returns: `{ cid, gatewayUrl, directory }` -- the site is live immediately at the
 After a successful demo, tell the user:
 - Their site is live at the gateway URL
 - This is a free demo on the calibration testnet
-- For permanent hosting, they need a session key (guide them through the upgrade flow below)
+- For permanent hosting, they need a Filecoin wallet and `NOVA_PIN_KEY` (guide them through the upgrade flow below)
 
 ### nova_deploy (permanent mainnet hosting)
-Requires auth. Deploy to mainnet with optional ENS domain.
+Requires `NOVA_PIN_KEY` env var (or browser signing via https://fil.focify.eth.limo). Deploy to mainnet with optional ENS domain.
 
 ```
 nova_deploy({
   path: "./dist",
-  sessionKey: "0x...",
-  walletAddress: "0x...",
   ensName: "mysite.eth"        // optional
 })
 ```
 
-If no auth is provided, suggest `nova_demo` instead.
+If no auth is configured, suggest `nova_demo` instead.
 
 If ENS is requested but no ENS key is configured, the response includes a `signingUrl` -- show it to the user and tell them to sign with MetaMask. Then poll with `nova_poll`.
 
@@ -53,9 +52,6 @@ After giving the user a signing URL, poll to check if they signed it.
 ```
 // Check if ENS update was signed
 nova_poll({ operation: "ens_update", ensName: "mysite.eth", targetCid: "bafybei..." })
-
-// Check if session key was registered
-nova_poll({ operation: "session_key", sessionAddress: "0x...", walletAddress: "0x...", chain: "mainnet" })
 
 // Check any transaction
 nova_poll({ operation: "tx_receipt", txHash: "0x...", chain: "ethereum" })
@@ -88,17 +84,17 @@ nova_clone({ url: "https://mysite.com", maxPages: 10 })
 ```
 
 ### nova_info (deployment details)
-Show details for a specific IPFS CID: dataset, pieces, size, proof status. Requires auth.
+Show details for a specific IPFS CID: dataset, pieces, size, proof status. Only needs a wallet address.
 
 ```
-nova_info({ cid: "bafybei...", sessionKey: "0x...", walletAddress: "0x..." })
+nova_info({ cid: "bafybei...", walletAddress: "0x..." })
 ```
 
 ### nova_wallet (balance and deposits)
-Show FIL and USDFC balance plus FOC deposit status. Requires auth.
+Show FIL and USDFC balance plus FOC deposit status. Only needs a wallet address.
 
 ```
-nova_wallet({ sessionKey: "0x...", walletAddress: "0x..." })
+nova_wallet({ walletAddress: "0x..." })
 ```
 
 ### nova_download (download from IPFS)
@@ -110,19 +106,17 @@ nova_download({ cid: "bafybei...", directory: "./my-site" })
 ```
 
 ### nova_manage (list stored content)
-List all pinned pieces grouped by IPFS CID. Shows what's deployed and what can be cleaned up.
+List all pinned pieces grouped by IPFS CID. Shows what's deployed and what can be cleaned up. Only needs a wallet address.
 
 ```
-nova_manage({ sessionKey: "0x...", walletAddress: "0x..." })
+nova_manage({ walletAddress: "0x..." })
 ```
 
 ### nova_manage_clean (remove old content)
-Remove old/duplicate deployments to reduce storage costs. Always run `nova_manage` first to review, and confirm with the user before cleaning.
+Remove old/duplicate deployments to reduce storage costs. Requires `NOVA_PIN_KEY` env var (or browser signing). Always run `nova_manage` first to review, and confirm with the user before cleaning.
 
 ```
 nova_manage_clean({
-  sessionKey: "0x...",
-  walletAddress: "0x...",
   keepCids: "bafybei..."    // keep this CID, remove everything else
 })
 ```
@@ -132,21 +126,19 @@ nova_manage_clean({
 Nova has three auth levels, from easiest to most permanent:
 
 1. **No auth (nova_demo)** -- works instantly, calibration testnet, free
-2. **Session key + wallet address** -- safe to paste in chat (scoped to storage, cannot move funds). Pass as `sessionKey` + `walletAddress` params.
-3. **Environment variables** -- for CI/automation: `NOVA_SESSION_KEY`, `NOVA_WALLET_ADDRESS`, `NOVA_ENS_KEY`
-
-No private keys are ever needed in chat. ENS updates and payment setup use browser signing via MetaMask.
+2. **Wallet address only (read-only)** -- for `nova_info`, `nova_wallet`, `nova_manage` (list). Set `NOVA_WALLET_ADDRESS` env var or pass `walletAddress` param or use `--wallet`/`-w` flag.
+3. **Private key (write operations)** -- for `nova_deploy`, `nova_manage_clean`. Set `NOVA_PIN_KEY` env var, or sign via https://fil.focify.eth.limo (browser signing with MetaMask).
+4. **ENS key** -- for ENS contenthash updates. Set `NOVA_ENS_KEY` env var, or use browser signing via https://ens.focify.eth.limo.
 
 ## Upgrade Flow (demo to permanent)
 
 When the user wants to move from demo to permanent hosting:
 
-1. **Create a session key**: Direct them to https://session.focify.eth.limo
-   - They connect MetaMask (Filecoin network)
-   - Sign the transaction
-   - Get back a session key (safe to paste in chat)
-2. **Deploy permanently**: Use `nova_deploy` with the session key + wallet address
-3. **Optional ENS domain**: Use `nova_ens` or pass `ensName` to `nova_deploy`
+1. **Get a Filecoin wallet**: Install MetaMask (https://metamask.io/download) and add Filecoin network (https://chainlist.org/chain/314)
+2. **Fund the wallet with USDFC**: Buy FIL on an exchange, send to MetaMask, swap for USDFC (https://sushi.com/filecoin/swap)
+3. **Set `NOVA_PIN_KEY`**: Export the wallet's private key and set it as the `NOVA_PIN_KEY` environment variable. Alternatively, sign transactions via https://fil.focify.eth.limo (browser signing with MetaMask).
+4. **Deploy permanently**: Run `nova_deploy` with the path to the site
+5. **Optional ENS domain**: Use `nova_ens` or pass `ensName` to `nova_deploy`
 
 ## Common Workflows
 
@@ -156,8 +148,8 @@ When the user wants to move from demo to permanent hosting:
 3. Ask if they want permanent hosting
 
 ### "Deploy this to Filecoin permanently"
-1. Check if they have a session key. If not, guide them to https://session.focify.eth.limo
-2. Use `nova_deploy({ path: "...", sessionKey: "...", walletAddress: "..." })`
+1. Check if `NOVA_PIN_KEY` is set. If not, tell them to set it or sign via https://fil.focify.eth.limo
+2. Use `nova_deploy({ path: "..." })`
 
 ### "Clone example.com and put it on Filecoin"
 1. Use `nova_clone({ url: "example.com" })` to clone to a local directory
@@ -172,15 +164,15 @@ When the user wants to move from demo to permanent hosting:
 1. Use `nova_status({ ensName: "mysite.eth" })`
 
 ### "Show me details about this CID"
-1. Use `nova_info({ cid: "bafybei...", sessionKey: "...", walletAddress: "..." })`
+1. Use `nova_info({ cid: "bafybei...", walletAddress: "0x..." })`
 
 ### "What's my balance?"
-1. Use `nova_wallet({ sessionKey: "...", walletAddress: "..." })`
+1. Use `nova_wallet({ walletAddress: "0x..." })`
 
 ### "Download this site from IPFS"
 1. Use `nova_download({ cid: "bafybei..." })`
 
 ### "Clean up old deployments"
-1. Use `nova_manage(...)` to list everything
+1. Use `nova_manage({ walletAddress: "0x..." })` to list everything
 2. Review with the user
-3. Use `nova_manage_clean(...)` with their confirmation
+3. Use `nova_manage_clean({ keepCids: "bafybei..." })` with their confirmation (requires `NOVA_PIN_KEY`)

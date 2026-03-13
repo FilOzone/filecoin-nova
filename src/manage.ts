@@ -2,7 +2,7 @@ import { WarmStorageService } from "@filoz/synapse-sdk/warm-storage";
 import { StorageContext } from "@filoz/synapse-sdk/storage";
 import { getSizeFromPieceCID } from "@filoz/synapse-core/piece";
 import { CID } from "multiformats/cid";
-import { createSynapse, resolveWalletAddress, type StorageAuth } from "./auth.js";
+import { createSynapse, createReadOnlySynapse, resolveWalletAddress, type StorageAuth } from "./auth.js";
 import { fetchDataSetRoots } from "./subgraph.js";
 
 /** Normalize a CID string to CIDv1 base32 for consistent comparison. */
@@ -71,9 +71,11 @@ function pieceSizeBytes(pieceCid: string): number {
 export async function listPieces(opts: StorageAuth & {
   mainnet: boolean;
 }): Promise<DataSetSummary[]> {
-  const synapse = createSynapse(opts, opts.mainnet);
-  const warmStorage = new WarmStorageService({ client: synapse.client });
   const address = resolveWalletAddress(opts);
+  const synapse = opts.pinKey
+    ? createSynapse(opts, opts.mainnet)
+    : createReadOnlySynapse(address, opts.mainnet);
+  const warmStorage = new WarmStorageService({ client: synapse.client });
 
   let datasets;
   try {
@@ -338,7 +340,6 @@ export async function cleanPieces(opts: StorageAuth & {
 }): Promise<{ removed: number; txHashes: string[]; keptCid: string; keptCids: string[]; failed: number; error?: string }> {
   const summaries = await listPieces({
     pinKey: opts.pinKey,
-    sessionKey: opts.sessionKey,
     walletAddress: opts.walletAddress,
     mainnet: opts.mainnet,
   });
