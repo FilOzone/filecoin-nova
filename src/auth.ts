@@ -33,12 +33,29 @@ export function resolveWalletAddress(auth: StorageAuth): Address {
 /**
  * Create a Synapse instance with full signing capability.
  * Required for write operations (upload, delete).
+ *
+ * When walletAddress differs from the pinKey's derived address (session key),
+ * uses the SDK's sessionClient pattern: main client with the funded wallet
+ * address (for reads + payer), session client with the signing key.
+ * This avoids FVM "actor not found" errors on eth_call -- viem sets `from`
+ * to the client account address, and FVM rejects non-existent actors.
  */
 export function createSynapse(auth: StorageAuth, isMainnet: boolean): Synapse {
   const chain = isMainnet ? mainnet : calibration;
 
   if (auth.pinKey) {
     const account = privateKeyToAccount(ensureHexKey(auth.pinKey));
+
+    // Session key: pinKey signs but wallet address is the on-chain identity
+    if (auth.walletAddress && auth.walletAddress.toLowerCase() !== account.address.toLowerCase()) {
+      const readClient = createClient({ chain, transport: http() });
+      const signClient = createClient({ chain, transport: http(), account });
+      // Attach wallet address for payer resolution + eth_call from field
+      (readClient as any).account = { address: auth.walletAddress as Address };
+      return new Synapse({ client: readClient, sessionClient: signClient } as any);
+    }
+
+    // Normal: pinKey IS the wallet's own key
     return Synapse.create({ account, chain, transport: http() });
   }
 
