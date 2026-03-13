@@ -108,6 +108,7 @@ const HELP = `
   ${c.bold}Options${c.reset}
 
     ${c.dim}--ens <name>${c.reset}          ENS domain (e.g. desite.ezpdpz.eth)
+    ${c.dim}--no-ens${c.reset}              Skip ENS prompt and ENS update
     ${c.dim}--rpc-url <url>${c.reset}       Ethereum RPC URL
     ${c.dim}--provider-id <id>${c.reset}    Storage provider ID
     ${c.dim}--wallet, -w <addr>${c.reset}  Wallet address (overrides NOVA_WALLET_ADDRESS)
@@ -162,6 +163,7 @@ async function runDeploy(args: string[]) {
       wallet: { type: "string", short: "w" },
       label: { type: "string" },
       clean: { type: "boolean", default: false },
+      "no-ens": { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
@@ -170,6 +172,7 @@ async function runDeploy(args: string[]) {
 
   const jsonMode = values.json!;
   const cleanAfterDeploy = values.clean!;
+  const noEns = values["no-ens"]!;
   if (jsonMode) muteConsole();
 
   banner();
@@ -178,7 +181,7 @@ async function runDeploy(args: string[]) {
   if (values.wallet) config.walletAddress = values.wallet;
 
   let directory: string | undefined = pos[0];
-  let ensName = values.ens || config.ensName;
+  let ensName = noEns ? undefined : (values.ens || config.ensName);
 
   // 1. Filecoin auth (pinKey required for write operations)
   if (!hasStorageAuth(config)) {
@@ -216,7 +219,7 @@ async function runDeploy(args: string[]) {
   }
 
   // 3. ENS name (optional — skip to deploy without ENS)
-  if (!ensName) {
+  if (!ensName && !noEns) {
     console.log("");
     const input = await ask(promptLabel("ENS domain (leave blank to skip):"));
     ensName = input || undefined;
@@ -1499,9 +1502,13 @@ async function runClone(args: string[]) {
 
     ${c.dim}--no-deploy${c.reset}           Clone only, don't deploy to Filecoin
     ${c.dim}--output <dir>${c.reset}        Output directory (default: ./domain-timestamp/)
-    ${c.dim}--max-pages <n>${c.reset}       Max pages to crawl (default: 50, 0 = unlimited)
+    ${c.dim}--max-pages <n>${c.reset}       Max pages to crawl (default: 50, 0 = unlimited).
+                          Includes sitemap-discovered pages. Top-level pages
+                          are prioritised over deep links (e.g. blog posts).
+                          Set 0 for full-site clones with no limit.
     ${c.dim}--screenshots${c.reset}         Save before/after screenshot comparison
     ${c.dim}--ens <name>${c.reset}          ENS domain to update after deploy
+    ${c.dim}--no-ens${c.reset}              Skip ENS prompt and ENS update
     ${c.dim}--clean${c.reset}               Remove old pieces after deploy
     ${c.dim}--calibration${c.reset}         Deploy to calibration testnet
     ${c.dim}--json${c.reset}                Output result as JSON
@@ -1522,6 +1529,7 @@ async function runClone(args: string[]) {
       output: { type: "string" },
       "max-pages": { type: "string" },
       "no-deploy": { type: "boolean", default: false },
+      "no-ens": { type: "boolean", default: false },
       screenshots: { type: "boolean", default: false },
       ens: { type: "string" },
       "rpc-url": { type: "string" },
@@ -1610,7 +1618,8 @@ async function runClone(args: string[]) {
   if (!values["no-deploy"]) {
     const config = resolveConfig(process.env);
     if (values.wallet) config.walletAddress = values.wallet;
-    let ensName = values.ens || config.ensName;
+    const noEns = values["no-ens"]!;
+    let ensName = noEns ? undefined : (values.ens || config.ensName);
     const isMainnet = !values.calibration;
 
     if (!hasStorageAuth(config)) {
@@ -1651,7 +1660,7 @@ async function runClone(args: string[]) {
     });
 
     // Prompt for ENS if not provided
-    if (!ensName && process.stdin.isTTY && !jsonMode) {
+    if (!ensName && !noEns && process.stdin.isTTY && !jsonMode) {
       const { ask: askEns, close: closeEns } = await import("./prompt.js");
       console.log("");
       const ensInput = await askEns(promptLabel("Point an ENS domain to this site? (leave blank to skip):"));
@@ -1745,7 +1754,7 @@ async function runDemo(args: string[]) {
   ${c.bold}Options${c.reset}
 
     ${c.cyan}--ens${c.reset} <name>                  ENS domain to update after deploy
-    ${c.cyan}--max-pages${c.reset} <n>              Max pages to crawl (default: 50)
+    ${c.cyan}--max-pages${c.reset} <n>              Max pages to crawl (default: 50, 0 = unlimited)
     ${c.cyan}--json${c.reset}                       Output result as JSON
 
   ${c.bold}Examples${c.reset}

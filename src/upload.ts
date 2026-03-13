@@ -61,7 +61,7 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
     info("Connecting to Filecoin Onchain Cloud...");
     const synapse = createSynapse(auth, isMainnet);
     const warmStorage = new WarmStorageService({ client: synapse.client });
-    const manager = new StorageManager({ synapse, warmStorageService: warmStorage, withCDN: false });
+    const manager = new StorageManager({ synapse, warmStorageService: warmStorage, withCDN: false, source: "filecoin-nova" });
 
     // 3. Stream CAR to provider
     const rootCidStr = carResult.rootCid.toString();
@@ -85,7 +85,7 @@ export async function uploadToFoc(config: UploadConfig): Promise<UploadResult> {
     const uploadOptions: Record<string, any> = {
       pieceMetadata,
       metadata: { withIPFSIndexing: "" },  // Dataset-level: enables IPNI advertisement for gateway retrieval
-      count: 1,  // Single copy (matches filecoin-pin behavior)
+      count: 2,  // Two copies for redundancy (SDK default)
       callbacks: {
         onProviderSelected: (provider: any) => {
           gutterLine(`Provider: ${provider.id}${provider.pdp?.serviceURL ? ` (${new URL(provider.pdp.serviceURL).hostname})` : ""}`);

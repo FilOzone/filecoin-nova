@@ -3,6 +3,8 @@ import { join, dirname, extname } from "node:path";
 import { URL } from "node:url";
 import { step, success, info, c } from "./ui.js";
 
+const SAFARI_UA = "Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+
 export interface CloneConfig {
   /** URL of the website to clone */
   url: string;
@@ -105,8 +107,10 @@ function urlToLocalPath(urlStr: string, canonicalOrigin: string): string {
       return join("_ext", parsed.hostname, base);
     }
 
-    // Same-origin
-    pathname = pathname.replace(/^\//, "");
+    // Same-origin -- decode percent-encoded characters so the file on disk
+    // matches the unencoded src attributes in the HTML (e.g. spaces in
+    // filenames: "moi voyage.svg" not "moi%20voyage.svg").
+    pathname = decodeURIComponent(pathname).replace(/^\//, "");
     if (!pathname || pathname.endsWith("/")) {
       pathname = join(pathname, "index.html");
     } else if (!extname(pathname)) {
@@ -120,17 +124,8 @@ function urlToLocalPath(urlStr: string, canonicalOrigin: string): string {
 }
 
 
-/** Extract all same-origin page links from the DOM. */
-async function extractLinks(
-  page: import("playwright").Page,
-  canonicalOrigin: string
-): Promise<string[]> {
-  const hrefs: string[] = await page.evaluate(() =>
-    Array.from(document.querySelectorAll("a[href]"))
-      .map((a) => (a as HTMLAnchorElement).href)
-      .filter((h) => h.startsWith("http"))
-  );
-
+/** Filter a list of absolute href strings to same-origin page URLs. */
+function filterPageLinks(hrefs: string[], canonicalOrigin: string): string[] {
   const unique = new Set<string>();
   for (const href of hrefs) {
     try {
@@ -149,6 +144,66 @@ async function extractLinks(
     }
   }
   return [...unique];
+}
+
+/** Extract all same-origin page links from the DOM. */
+async function extractLinks(
+  page: import("playwright").Page,
+  canonicalOrigin: string
+): Promise<string[]> {
+  const hrefs: string[] = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("a[href]"))
+      .map((a) => (a as HTMLAnchorElement).href)
+      .filter((h) => h.startsWith("http"))
+  );
+  return filterPageLinks(hrefs, canonicalOrigin);
+}
+
+
+/**
+ * Fetch a URL and return its body if it's a non-HTML asset.
+ * Returns null for errors, HTML responses, or empty bodies.
+ */
+async function fetchAsset(
+  url: string,
+  requestApi: { get: (url: string, opts?: any) => Promise<any> },
+): Promise<{ body: Buffer; contentType: string } | null> {
+  try {
+    const resp = await requestApi.get(url, { failOnStatusCode: false, timeout: 15000 });
+    if (resp.status() < 200 || resp.status() >= 400) { await resp.dispose(); return null; }
+    const ct = resp.headers()["content-type"] || "";
+    if (ct.includes("text/html")) { await resp.dispose(); return null; }
+    const body = await resp.body();
+    await resp.dispose();
+    if (body.length === 0) return null;
+    return { body, contentType: ct };
+  } catch { return null; }
+}
+
+/**
+ * Save an asset to disk and register it in the asset map.
+ * Handles Next.js /_next/image dedup keys automatically.
+ */
+function saveAsset(
+  url: string,
+  body: Buffer,
+  assetMap: Map<string, string>,
+  canonicalOrigin: string,
+  outDir: string,
+): { localPath: string; bytes: number } {
+  const localPath = urlToLocalPath(url, canonicalOrigin);
+  const ns = extractNextImageSource(url, canonicalOrigin);
+  const dk = ns ? ns.split("?")[0] : url.split("?")[0];
+  assetMap.set(url, localPath);
+  assetMap.set(dk, localPath);
+  if (ns) {
+    assetMap.set(ns, localPath);
+    assetMap.set(ns.split("?")[0], localPath);
+  }
+  const fullPath = join(outDir, localPath);
+  mkdirSafe(dirname(fullPath));
+  writeFileSync(fullPath, body);
+  return { localPath, bytes: body.length };
 }
 
 
@@ -259,14 +314,18 @@ async function detectLocales(
   );
   allScriptTexts.push(...inlineTexts);
 
-  // External scripts
-  for (const src of scriptSrcs) {
+  // External scripts (fetched concurrently in a single evaluate call)
+  if (scriptSrcs.length > 0) {
     try {
-      const text = await page.evaluate(async (url: string) => {
-        const r = await fetch(url);
-        return r.text();
-      }, src);
-      allScriptTexts.push(text);
+      const externalTexts = await page.evaluate(async (urls: string[]) => {
+        const results = await Promise.allSettled(
+          urls.map(u => fetch(u).then(r => r.text()))
+        );
+        return results
+          .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
+          .map(r => r.value);
+      }, scriptSrcs);
+      allScriptTexts.push(...externalTexts);
     } catch {}
   }
 
@@ -326,6 +385,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   const visited = new Set<string>();
   const screenshots: { original: string; clone: string }[] = [];
   let assetCount = 0;
+  let totalSize = 0;
   let detectedDefaultLocale: string | undefined;
   let detectedLocaleCodes: string[] = [];
 
@@ -476,6 +536,11 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
 
           // Cross-origin responses: cache API/data responses for replay on the clone
           if (!url.startsWith(canonicalOrigin)) {
+            // Only cache main-frame responses. Iframe content (YouTube embeds,
+            // Slack widgets, Twitter cards) loads in its own isolated context and
+            // can never be replayed by the parent page's XHR/fetch shim.
+            const frame = response.frame();
+            if (frame !== page.mainFrame()) return;
             // Skip binary assets -- only cache data responses (JSON, text, XML)
             if (
               contentType.startsWith("image/") ||
@@ -518,10 +583,8 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
       }
 
       // If we got redirected off-domain, skip this page entirely
-      if (!page.url().startsWith(canonicalOrigin)) {
-        await page.close();
-        continue;
-      }
+      // (page.close() handled by finally block)
+      if (!page.url().startsWith(canonicalOrigin)) continue;
 
       // Scroll to trigger lazy content behind scroll event listeners,
       // native loading="lazy", and IntersectionObserver-based lazy loaders
@@ -604,20 +667,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
       // Extract links for further crawling
       const links = await extractLinks(page, canonicalOrigin);
       // Merge dropdown-discovered links through the same filtering
-      for (const href of dropdownHrefs) {
-        try {
-          const u = new URL(href);
-          if (u.origin !== canonicalOrigin || u.hash) continue;
-          const lastSegment = u.pathname.split("/").pop() || "";
-          const dot = lastSegment.lastIndexOf(".");
-          if (dot > 0) {
-            const ext = lastSegment.slice(dot).toLowerCase();
-            if (ext !== ".html" && ext !== ".htm") continue;
-          }
-          const normalized = u.origin + u.pathname.replace(/\/+$/, "");
-          links.push(normalized);
-        } catch {}
-      }
+      links.push(...filterPageLinks(dropdownHrefs, canonicalOrigin));
       for (const link of links) {
         if (!visited.has(link) && !queued.has(link)) {
           queue.push(link);
@@ -642,7 +692,6 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
             info(`  Found ${detection.urls.length} locale variants${detection.defaultLocale ? ` (default: ${detection.defaultLocale})` : ""}`);
           }
         } catch {}
-
       }
 
       // Save captured assets
@@ -668,6 +717,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
           const fullPath = join(outDir, pagePath);
           mkdirSafe(dirname(fullPath));
           writeFileSync(fullPath, asset.body);
+          totalSize += asset.body.length;
           htmlPages.set(currentUrl, pagePath);
           continue;
         }
@@ -685,8 +735,55 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         const fullPath = join(outDir, localPath);
         mkdirSafe(dirname(fullPath));
         writeFileSync(fullPath, asset.body);
+        totalSize += asset.body.length;
         assetCount++;
       }
+
+      // Safari media check: fetch same page with Safari UA via HTTP (no browser
+      // navigation) and parse for media URLs the server may serve differently.
+      try {
+        const safResp = await context.request.get(currentUrl, {
+          headers: { "User-Agent": SAFARI_UA },
+          failOnStatusCode: false,
+          timeout: 15000,
+        });
+        if (safResp.status() >= 200 && safResp.status() < 400) {
+          const safHtml = await safResp.text();
+          await safResp.dispose();
+          // Extract media URLs from raw HTML: source[src], video[src], video[poster], srcset
+          const safariMediaUrls: string[] = [];
+          const srcRe = /<(?:source|video|audio)\s[^>]*\bsrc=["']([^"']+)["']/gi;
+          const posterRe = /<video\s[^>]*\bposter=["']([^"']+)["']/gi;
+          const srcsetRe = /\bsrcset=["']([^"']+)["']/gi;
+          let rm: RegExpExecArray | null;
+          while ((rm = srcRe.exec(safHtml)) !== null) {
+            try { safariMediaUrls.push(new URL(rm[1], currentUrl).href); } catch {}
+          }
+          while ((rm = posterRe.exec(safHtml)) !== null) {
+            try { safariMediaUrls.push(new URL(rm[1], currentUrl).href); } catch {}
+          }
+          while ((rm = srcsetRe.exec(safHtml)) !== null) {
+            for (const entry of rm[1].split(",")) {
+              const u = entry.trim().split(/\s+/)[0];
+              if (u) { try { safariMediaUrls.push(new URL(u, currentUrl).href); } catch {} }
+            }
+          }
+          const newSafariUrls = safariMediaUrls.filter(u => {
+            const ns = extractNextImageSource(u, canonicalOrigin);
+            const dk = ns ? ns.split("?")[0] : u.split("?")[0];
+            return u.startsWith(canonicalOrigin) && !assetMap.has(u) && !assetMap.has(dk);
+          });
+          for (const url of newSafariUrls) {
+            const asset = await fetchAsset(url, context.request);
+            if (asset) {
+              const { localPath, bytes } = saveAsset(url, asset.body, assetMap, canonicalOrigin, outDir);
+              totalSize += bytes;
+              assetCount++;
+              info(`    ${c.green}+safari${c.reset} ${localPath} (${Math.round(bytes / 1024)}KB)`);
+            }
+          }
+        } else { await safResp.dispose(); }
+      } catch {}
 
       // Fallback: if the raw response wasn't captured (e.g. redirect, SPA),
       // use page.content() as a last resort.
@@ -695,6 +792,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         const fullPath = join(outDir, pagePath);
         mkdirSafe(dirname(fullPath));
         writeFileSync(fullPath, html);
+        totalSize += Buffer.byteLength(html);
         assetMap.set(currentUrl, pagePath);
         assetMap.set(currentUrl + "/", pagePath);
         htmlPages.set(currentUrl, pagePath);
@@ -712,111 +810,6 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
     info(`  Cached ${apiResponseCache.size} cross-origin API response(s) (${Math.round(totalBytes / 1024)}KB) for replay`);
   }
   console.log("");
-
-  // ── Safari asset discovery ──
-  // Some sites serve different assets to Safari (e.g. .mov instead of .webm).
-  // A second pass with a Safari UA on the same Chromium browser catches these.
-  const safariCtx = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    userAgent: "Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-    serviceWorkers: "block",
-    bypassCSP: true,
-    ignoreHTTPSErrors: true,
-  });
-
-  let safariAssetCount = 0;
-  const safariTotal = htmlPages.size;
-  let safariPageIdx = 0;
-  info(`  Scanning ${safariTotal} page(s) with Safari UA...`);
-  for (const [pageUrl] of htmlPages) {
-    safariPageIdx++;
-    const shortUrl = pageUrl.replace(canonicalOrigin, "") || "/";
-    info(`  ${safariPageIdx}/${safariTotal} ${shortUrl}`);
-    const safariPage = await safariCtx.newPage();
-    try {
-      try {
-        await safariPage.goto(pageUrl, { waitUntil: "networkidle", timeout: 30000 });
-      } catch (navErr: any) {
-        if (!navErr.message?.includes("Timeout")) throw navErr;
-      }
-      // Extract all media source URLs from the hydrated DOM
-      const mediaUrls: string[] = await safariPage.evaluate(() => {
-        const urls: string[] = [];
-        // <source src="..."> inside <video>/<audio>/<picture>
-        for (const el of document.querySelectorAll("source[src]")) {
-          urls.push((el as HTMLSourceElement).src);
-        }
-        // <video src="..."> and <audio src="..."> direct sources
-        for (const el of document.querySelectorAll("video[src], audio[src]")) {
-          urls.push((el as HTMLVideoElement).src);
-        }
-        // <video poster="...">
-        for (const el of document.querySelectorAll("video[poster]")) {
-          urls.push((el as HTMLVideoElement).poster);
-        }
-        // <img srcset="..."> and <source srcset="...">
-        for (const el of document.querySelectorAll("[srcset]")) {
-          const srcset = el.getAttribute("srcset") || "";
-          for (const entry of srcset.split(",")) {
-            const url = entry.trim().split(/\s+/)[0];
-            if (url) urls.push(new URL(url, location.href).href);
-          }
-        }
-        return urls.filter(u => u.startsWith("http"));
-      });
-      // Download new assets not already captured by the main crawl
-      // For /_next/image URLs, dedup by source image path (not the shared /_next/image path)
-      const newUrls = mediaUrls.filter(u => {
-        const nextSrc = extractNextImageSource(u, canonicalOrigin);
-        const dedupKey = nextSrc ? nextSrc.split("?")[0] : u.split("?")[0];
-        return u.startsWith(canonicalOrigin) && !assetMap.has(u) && !assetMap.has(dedupKey);
-      });
-      if (newUrls.length > 0) {
-        info(`    ${newUrls.length} new asset(s) to download`);
-      }
-      for (const url of newUrls) {
-        try {
-          const resp = await context.request.get(url, { failOnStatusCode: false });
-          if (resp.status() >= 200 && resp.status() < 400) {
-            const ct = resp.headers()["content-type"] || "";
-            if (!ct.includes("text/html")) {
-              const body = await resp.body();
-              await resp.dispose();
-              if (body.length > 0) {
-                const localPath = urlToLocalPath(url, canonicalOrigin);
-                const nextSrc = extractNextImageSource(url, canonicalOrigin);
-                const dedupKey = nextSrc ? nextSrc.split("?")[0] : url.split("?")[0];
-                assetMap.set(url, localPath);
-                assetMap.set(dedupKey, localPath);
-                if (nextSrc) {
-                  assetMap.set(nextSrc, localPath);
-                  assetMap.set(nextSrc.split("?")[0], localPath);
-                }
-                const fullPath = join(outDir, localPath);
-                mkdirSafe(dirname(fullPath));
-                writeFileSync(fullPath, body);
-                safariAssetCount++;
-                const sizeKB = Math.round(body.length / 1024);
-                info(`    ${c.green}+${c.reset} ${localPath} (${sizeKB}KB)`);
-              }
-            } else {
-              await resp.dispose();
-            }
-          } else {
-            await resp.dispose();
-          }
-        } catch {}
-      }
-    } catch {} finally {
-      await safariPage.close();
-    }
-  }
-  await safariCtx.close();
-
-  if (safariAssetCount > 0) {
-    assetCount += safariAssetCount;
-    info(`  Found ${safariAssetCount} Safari-specific asset(s)`);
-  }
 
   // Scan CSS for url() references not triggered during browsing
   const scannedCss = new Set<string>();
@@ -865,30 +858,17 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
     const batch = toFetch.slice(i, i + BATCH_SIZE);
     const results = await Promise.allSettled(
       batch.map(async (absoluteUrl) => {
-        const noQuery = absoluteUrl.split("?")[0];
-        const resp = await context.request.get(absoluteUrl, { failOnStatusCode: false });
-        if (resp.status() < 200 || resp.status() >= 400) {
-          await resp.dispose();
-          return null;
-        }
-        const ct = resp.headers()["content-type"] || "";
-        if (ct.includes("text/html")) { await resp.dispose(); return null; }
-        const body = await resp.body();
-        await resp.dispose();
-        if (body.length === 0) return null;
-        return { absoluteUrl, noQuery, body };
+        const asset = await fetchAsset(absoluteUrl, context.request);
+        if (!asset) return null;
+        return { absoluteUrl, body: asset.body };
       })
     );
 
     for (const r of results) {
       if (r.status !== "fulfilled" || !r.value) continue;
-      const { absoluteUrl, noQuery, body } = r.value;
-      const localPath = urlToLocalPath(absoluteUrl, canonicalOrigin);
-      assetMap.set(absoluteUrl, localPath);
-      assetMap.set(noQuery, localPath);
-      const destPath = join(outDir, localPath);
-      mkdirSafe(dirname(destPath));
-      writeFileSync(destPath, body);
+      const { absoluteUrl, body } = r.value;
+      const { bytes } = saveAsset(absoluteUrl, body, assetMap, canonicalOrigin, outDir);
+      totalSize += bytes;
       deferredCount++;
     }
 
@@ -994,6 +974,20 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
             v.setAttribute("muted", "");
           }
 
+          // Next.js Image hydration fix: strip data-nimg and srcset from
+          // Next.js-managed images.  React's Image component uses data-nimg
+          // to identify its elements and resets src/srcset to /_next/image
+          // URLs during hydration.  Those URLs 404 on static IPFS clones.
+          // Removing data-nimg prevents React from recognising the element.
+          // Removing srcset forces the browser to use src (already rewritten
+          // to the correct local path).  Safe for non-Next.js sites (no
+          // elements match).  Safe for custom loaders (external CDN URLs
+          // don't go through /_next/image).
+          for (const img of document.querySelectorAll("img[data-nimg]")) {
+            img.removeAttribute("data-nimg");
+            img.removeAttribute("srcset");
+          }
+
           function lookup(url: string): string | undefined {
             const direct = map.get(url);
             if (direct) return direct;
@@ -1014,50 +1008,55 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
               || map.get(url.replace(/\/$/, ""));
           }
 
+          // Rewrite same-origin anchor hrefs to local paths so navigation
+          // stays within the clone instead of redirecting to the live site.
+          // Handle both www and non-www variants of the canonical origin.
+          const canonOrigin = new URL(baseUrl).origin;
+          const wwwVariant = canonOrigin.includes("://www.")
+            ? canonOrigin.replace("://www.", "://")
+            : canonOrigin.replace("://", "://www.");
+          for (const a of document.querySelectorAll("a[href]")) {
+            const href = a.getAttribute("href")!;
+            for (const org of [canonOrigin, wwwVariant]) {
+              if (href.startsWith(org)) {
+                a.setAttribute("href", href.substring(org.length) || "/");
+                break;
+              }
+            }
+          }
+
           for (const el of document.querySelectorAll("*")) {
             const isAnchor = el.tagName === "A";
             for (const attr of el.attributes) {
               if (isAnchor && attr.name === "href") continue;
               const val = attr.value.trim();
               if (!val || val.length > 2000) continue;
+              // Srcset (absolute, relative, or mixed) -- unified handler.
+              // Resolves each entry independently so mixed srcsets with both
+              // relative-with-query and absolute URLs all get rewritten.
+              if (val.includes(",") && /\s\d+[wx]/.test(val)) {
+                let changed = false;
+                const newVal = val.split(",").map((entry: string) => {
+                  const parts = entry.trim().split(/\s+/);
+                  let resolved = parts[0];
+                  if (!resolved.startsWith("http")) {
+                    try { resolved = new URL(resolved, baseUrl).href; } catch { return parts.join(" "); }
+                  }
+                  const localPath = lookup(resolved);
+                  if (localPath) {
+                    parts[0] = prefix + localPath;
+                    changed = true;
+                  }
+                  return parts.join(" ");
+                }).join(", ");
+                if (changed) attr.value = newVal;
+                continue;
+              }
+
               if (!val.startsWith("http://") && !val.startsWith("https://")) {
-                // Srcset with absolute URLs
-                if (val.includes(",") && /\s\d+[wx]/.test(val) && val.includes("http")) {
-                  let changed = false;
-                  const newVal = val.split(",").map((entry: string) => {
-                    const parts = entry.trim().split(/\s+/);
-                    if (parts[0].startsWith("http")) {
-                      const localPath = lookup(parts[0]);
-                      if (localPath) {
-                        parts[0] = prefix + localPath;
-                        changed = true;
-                      }
-                    }
-                    return parts.join(" ");
-                  }).join(", ");
-                  if (changed) attr.value = newVal;
-                  continue;
-                }
-                // Srcset with relative URLs (e.g. /_next/image?url=...&w=640 640w)
-                if (val.includes(",") && /\s\d+[wx]/.test(val)) {
-                  let changed = false;
-                  const newVal = val.split(",").map((entry: string) => {
-                    const parts = entry.trim().split(/\s+/);
-                    try {
-                      const resolved = new URL(parts[0], baseUrl).href;
-                      const localPath = lookup(resolved);
-                      if (localPath) {
-                        parts[0] = prefix + localPath;
-                        changed = true;
-                      }
-                    } catch {}
-                    return parts.join(" ");
-                  }).join(", ");
-                  if (changed) attr.value = newVal;
-                  continue;
-                }
-                // Single relative URL -- resolve against original origin and look up
-                if (val.startsWith("/") || val.startsWith("./") || val.startsWith("../")) {
+                // Relative URLs with query params: resolve and rewrite via
+                // asset map (e.g. /_next/image?url=X).
+                if (val.includes("?") && (val.startsWith("/") || val.startsWith("./") || val.startsWith("../"))) {
                   try {
                     const resolved = new URL(val, baseUrl).href;
                     const localPath = lookup(resolved);
@@ -1066,23 +1065,20 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
                     }
                   } catch {}
                 }
-                continue;
-              }
-
-              if (val.includes(",") && /\s\d+[wx]/.test(val)) {
-                let changed = false;
-                const newVal = val.split(",").map((entry: string) => {
-                  const parts = entry.trim().split(/\s+/);
-                  if (parts[0].startsWith("http")) {
-                    const localPath = lookup(parts[0]);
-                    if (localPath) {
-                      parts[0] = prefix + localPath;
-                      changed = true;
-                    }
-                  }
-                  return parts.join(" ");
-                }).join(", ");
-                if (changed) attr.value = newVal;
+                // Bare relative src/poster (no /, ./, ../ prefix): resolve
+                // against the original page URL and convert to root-absolute.
+                // On the original server /build serves from root context, but
+                // on IPFS /build/index.html has /build/ as base, so bare
+                // "src/img/file.svg" resolves to /build/src/img/... and 404s.
+                if ((attr.name === "src" || attr.name === "poster") &&
+                    !val.startsWith("/") && !val.startsWith("./") && !val.startsWith("../") &&
+                    !val.startsWith("data:") && !val.startsWith("#")) {
+                  try {
+                    const resolved = new URL(val, baseUrl);
+                    const abs = resolved.pathname + resolved.search;
+                    if (abs !== val) attr.value = abs;
+                  } catch {}
+                }
                 continue;
               }
 
@@ -1095,14 +1091,42 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
 
           document.querySelector("base")?.remove();
 
+          // Next.js <Image> hydration fix: if React somehow still sets
+          // /_next/image URLs via property assignment (e.g. lazy-loaded
+          // images added after initial hydration), intercept the src setter
+          // to resolve to the source image path.  The main fix is the
+          // data-nimg/srcset stripping above; this is a safety net for src.
+          const nis = document.createElement("script");
+          nis.textContent = `(function(){`
+            + `var ds=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');`
+            + `if(!ds||!ds.set)return;`
+            + `Object.defineProperty(HTMLImageElement.prototype,'src',{`
+            +   `set:function(v){`
+            +     `if(typeof v==='string'&&v.indexOf('/_next/image')!==-1){`
+            +       `try{var u=new URL(v,location.href);var s=u.searchParams.get('url');`
+            +         `if(s){ds.set.call(this,s);return}`
+            +       `}catch(e){}`
+            +     `}`
+            +     `ds.set.call(this,v)`
+            +   `},`
+            +   `get:ds.get,configurable:true`
+            + `});`
+            + `})()`;
+          document.head.insertBefore(nis, document.head.firstChild);
+
           // MutationObserver for dynamically-created elements:
           // 1. Video muted: React/Vue set muted via JS property, not HTML attribute;
           //    Safari blocks autoplay without it.
           // 2. Image crossorigin: frameworks re-add crossorigin="anonymous" during
           //    hydration, triggering CORS for external CDN images (e.g. Sanity).
           //    Stripping it lets the browser load images without CORS.
+          // 3. Next.js Image: React hydration recovery (error #418) rebuilds the
+          //    DOM via innerHTML, re-adding data-nimg and srcset with /_next/image
+          //    URLs that 404 on IPFS.  childList observer catches newly-added
+          //    elements and strips srcset so the browser falls back to src
+          //    (already rewritten to the correct local path).
           const ms = document.createElement("script");
-          ms.textContent = `new MutationObserver(m=>m.forEach(r=>r.addedNodes.forEach(n=>{if(n.querySelectorAll){for(const v of n.querySelectorAll('video[autoplay]:not([muted])'))v.setAttribute('muted','');for(const i of n.querySelectorAll('img[crossorigin]'))i.removeAttribute('crossorigin')}}))).observe(document.documentElement,{childList:true,subtree:true})`;
+          ms.textContent = `new MutationObserver(m=>m.forEach(r=>r.addedNodes.forEach(n=>{if(n.tagName==='IMG'&&n.getAttribute('data-nimg')){n.removeAttribute('data-nimg');n.removeAttribute('srcset')}if(n.querySelectorAll){for(const v of n.querySelectorAll('video[autoplay]:not([muted])'))v.setAttribute('muted','');for(const i of n.querySelectorAll('img[crossorigin]'))i.removeAttribute('crossorigin');for(const i of n.querySelectorAll('img[data-nimg]')){i.removeAttribute('data-nimg');i.removeAttribute('srcset')}}}))).observe(document.documentElement,{childList:true,subtree:true})`;
           document.head.prepend(ms);
 
           // Inject API response cache -- frameworks (Nuxt, Next.js, React) re-fetch
@@ -1242,6 +1266,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
 
         mkdirSafe(destDir);
         writeFileSync(destPath, html);
+        totalSize += Buffer.byteLength(html);
         mirrorCount++;
       }
     };
@@ -1297,17 +1322,6 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   }
 
   success("Clone complete");
-
-  // Calculate total size
-  let totalSize = 0;
-  const countSize = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const p = join(dir, entry.name);
-      if (entry.isDirectory()) countSize(p);
-      else totalSize += statSync(p).size;
-    }
-  };
-  countSize(outDir);
 
   return {
     directory: outDir,

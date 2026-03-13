@@ -52,11 +52,11 @@ export function createSynapse(auth: StorageAuth, isMainnet: boolean): Synapse {
       const signClient = createClient({ chain, transport: http(), account });
       // Attach wallet address for payer resolution + eth_call from field
       (readClient as any).account = { address: auth.walletAddress as Address };
-      return new Synapse({ client: readClient, sessionClient: signClient } as any);
+      return new Synapse({ client: readClient, sessionClient: signClient, source: "filecoin-nova" } as any);
     }
 
     // Normal: pinKey IS the wallet's own key
-    return Synapse.create({ account, chain, transport: http() });
+    return Synapse.create({ account, chain, transport: http(), source: "filecoin-nova" });
   }
 
   throw new Error(
@@ -78,5 +78,5 @@ export function createReadOnlySynapse(walletAddress: string, isMainnet: boolean)
     chain,
     transport: http(),
   });
-  return new Synapse({ client } as any);
+  return new Synapse({ client, source: "filecoin-nova" } as any);
 }

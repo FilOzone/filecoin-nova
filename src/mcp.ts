@@ -190,7 +190,7 @@ server.registerTool(
       "After the demo, guide the user to permanent mainnet hosting: set NOVA_PIN_KEY or sign via https://fil.focify.eth.limo then use nova_deploy.",
     inputSchema: z.object({
       path: z.string().describe("URL to clone (e.g. 'filoz.org') or path to a directory/archive to deploy"),
-      maxPages: z.number().optional().describe("Max pages to crawl when cloning a URL (default: 50)"),
+      maxPages: z.number().optional().describe("Max pages to crawl when cloning a URL (default: 50, 0 = unlimited). Includes sitemap-discovered pages; top-level pages prioritised over deep links."),
     }),
   },
   async (params): Promise<CallToolResult> => {
@@ -617,7 +617,7 @@ server.registerTool(
       "Handles Next.js image optimization URLs, SRI removal, cross-origin replay, and locale detection.",
     inputSchema: z.object({
       url: z.string().describe("URL of the website to clone (e.g. 'filoz.org' or 'https://example.com')"),
-      maxPages: z.number().optional().describe("Max pages to crawl (default: 50)"),
+      maxPages: z.number().optional().describe("Max pages to crawl (default: 50, 0 = unlimited). Includes sitemap-discovered pages; top-level pages prioritised over deep links."),
       output: z.string().optional().describe("Output directory (default: auto-generated temp dir)"),
       screenshots: z.boolean().optional().describe("Take before/after screenshots for comparison (default: false)"),
     }),

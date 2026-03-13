@@ -1,6 +1,6 @@
 {
   "name": "filecoin-nova",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Clone, deploy, and manage websites on Filecoin Onchain Cloud with ENS resolution",
   "type": "module",
   "main": "./dist/deploy.js",
@@ -41,7 +41,7 @@
   "license": "MIT",
   "dependencies": {
     "@filoz/synapse-core": "^0.2.3",
-    "@filoz/synapse-sdk": "^0.38.0",
+    "@filoz/synapse-sdk": "^0.39.0",
     "@helia/unixfs": "^7.0.4",
     "@ipld/car": "^5.4.2",
     "@modelcontextprotocol/sdk": "^1.27.1",

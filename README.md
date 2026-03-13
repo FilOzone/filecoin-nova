@@ -296,7 +296,7 @@ For **permanent hosting**:
 | Flag | Commands | What it does |
 |------|----------|-------------|
 | `--no-deploy` | clone | Capture only, don't deploy |
-| `--max-pages <n>` | clone, demo | Max pages to capture (default: 50, 0 = unlimited) |
+| `--max-pages <n>` | clone, demo | Max pages to crawl (default: 50, 0 = unlimited). Includes sitemap-discovered pages. Top-level pages are prioritised over deep links. |
 | `--screenshots` | clone | Save before/after comparison |
 | `--output <dir>` | clone | Output directory |
 | `--ens <name>` | clone, deploy, ens | ENS domain (e.g. `mysite.eth`) |
