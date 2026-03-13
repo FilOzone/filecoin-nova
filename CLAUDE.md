@@ -98,6 +98,8 @@ Uses `@filoz/synapse-sdk` (v0.38.0+) directly, NOT filecoin-pin CLI.
 - Auth model: `NOVA_PIN_KEY` for writes (deploy, clean), `NOVA_WALLET_ADDRESS` or `--wallet` for reads (info, wallet, manage list). Demo mode uses embedded session key.
 - CAR streaming: pass ReadableStream (not Uint8Array) to StorageManager.upload() to bypass 200 MiB limit, routing through uploadPieceStreaming (1 GiB limit)
 - `--clean` on first-ever deploy may fail with "No datasets found" - handled gracefully by catch
+- **Session key auth (viem)**: When pinKey's derived address != walletAddress, this is a session key. Must use `new Synapse({ client: readClient, sessionClient: signClient })` -- NOT `Synapse.create({ account })`. viem sets `from: account.address` on `eth_call`, FVM rejects non-existent actors. The main client needs the wallet address (funded actor) for reads/payer, session client needs the signing key.
+- **Non-TTY progress**: Upload `onProgress` callback must emit line-based output when `!process.stderr.isTTY` (piped consumers like focify-me, CI). Use `gutterLine()` at 10% milestones, not `\r` carriage returns.
 
 ## Crawling (clone.ts)
 

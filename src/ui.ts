@@ -119,3 +119,32 @@ export function link(url: string): string {
   if (!process.stderr.isTTY) return url;
   return `\x1b]8;;${url}\x1b\\${c.cyan}${url}${c.reset}\x1b]8;;\x1b\\`;
 }
+
+/** BigInt-safe JSON serializer (converts bigint to string to preserve precision) */
+export function jsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    typeof val === "bigint" ? val.toString() : val, 2);
+}
+
+/** Format a token amount with decimals, properly rounded to 4 decimal places. */
+export function formatToken(val: bigint, decimals: number): string {
+  const divisor = BigInt(10 ** decimals);
+  const whole = val / divisor;
+  const frac = val % divisor;
+  const fracStr = frac.toString().padStart(decimals, "0").slice(0, 4);
+  // Round: check the 5th digit
+  const fifthDigit = decimals > 4 ? Number(frac.toString().padStart(decimals, "0")[4] || "0") : 0;
+  if (fifthDigit >= 5) {
+    const rounded = Number(fracStr) + 1;
+    if (rounded >= 10000) {
+      return `${whole + 1n}.0000`;
+    }
+    return `${whole}.${rounded.toString().padStart(4, "0")}`;
+  }
+  return `${whole}.${fracStr}`;
+}
+
+/** Check if a string looks like a URL (has protocol or domain.tld pattern). */
+export function isUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input) || /^[a-z0-9-]+\.[a-z]{2,}/i.test(input);
+}

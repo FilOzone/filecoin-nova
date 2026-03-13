@@ -13,15 +13,9 @@ import { pollEnsContenthash } from "./poll.js";
 import { listPieces, cleanPieces, toCidV1, type PieceInfo } from "./manage.js";
 import { relativeTime } from "./subgraph.js";
 import { ask, close } from "./prompt.js";
-import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize, link } from "./ui.js";
+import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize, link, jsonStringify, formatToken, isUrl } from "./ui.js";
 
 
-
-// BigInt-safe JSON serializer (converts bigint to string to preserve precision)
-function jsonStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, val) =>
-    typeof val === "bigint" ? val.toString() : val, 2);
-}
 
 // Sentinel error for early exits — skips the error print in main().catch()
 class ExitError extends Error {
@@ -48,6 +42,38 @@ function unmuteConsole() {
 
 function earlyExit(code: number, message?: string): never {
   throw new ExitError(code, message);
+}
+
+/**
+ * Poll for ENS contenthash update after browser signing.
+ * Shared by runDeploy, runEns, and runClone.
+ */
+async function pollForEnsUpdate(
+  ensName: string,
+  cid: string,
+  rpcUrl?: string,
+): Promise<{ confirmed: boolean; ethLimoUrl?: string }> {
+  const POLL_INTERVAL = 5_000;
+  const POLL_TIMEOUT = 300_000; // 5 minutes
+  const start = Date.now();
+
+  while (Date.now() - start < POLL_TIMEOUT) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    const poll = await pollEnsContenthash(ensName, cid, rpcUrl);
+    if (poll.confirmed) {
+      const ethLimoUrl = `https://${ensName.replace(/\.eth$/, "")}.eth.limo`;
+      success(`ENS updated: ${c.bold}${ethLimoUrl}${c.reset}`);
+      return { confirmed: true, ethLimoUrl };
+    }
+    if (process.stderr.isTTY) {
+      const elapsed = Math.round((Date.now() - start) / 1000);
+      process.stderr.write(`\r  ${c.dim}Polling... ${elapsed}s${c.reset}`);
+    }
+  }
+  if (process.stderr.isTTY) process.stderr.write("\r" + " ".repeat(30) + "\r");
+  info("ENS update not detected yet. It may still be pending.");
+  info(`Check: nova ens ${ensName}`);
+  return { confirmed: false };
 }
 
 const HELP = `
@@ -270,29 +296,10 @@ async function runDeploy(args: string[]) {
 
     if (process.stdin.isTTY && !jsonMode) {
       info("Waiting for ENS contenthash update...");
-      const POLL_INTERVAL = 5_000;
-      const POLL_TIMEOUT = 300_000; // 5 minutes
-      const start = Date.now();
-      let confirmed = false;
-      while (Date.now() - start < POLL_TIMEOUT) {
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-        const poll = await pollEnsContenthash(ensName, result.cid, values["rpc-url"] || config.rpcUrl);
-        if (poll.confirmed) {
-          confirmed = true;
-          result.ensName = ensName;
-          result.ethLimoUrl = `https://${ensName.replace(/\.eth$/, "")}.eth.limo`;
-          success(`ENS updated: ${c.bold}${result.ethLimoUrl}${c.reset}`);
-          break;
-        }
-        if (process.stderr.isTTY) {
-          const elapsed = Math.round((Date.now() - start) / 1000);
-          process.stderr.write(`\r  ${c.dim}Polling... ${elapsed}s${c.reset}`);
-        }
-      }
-      if (process.stderr.isTTY) process.stderr.write("\r" + " ".repeat(30) + "\r");
-      if (!confirmed) {
-        info("ENS update not detected yet. It may still be pending.");
-        info(`Check: nova ens ${ensName}`);
+      const poll = await pollForEnsUpdate(ensName, result.cid, values["rpc-url"] || config.rpcUrl);
+      if (poll.confirmed) {
+        result.ensName = ensName;
+        result.ethLimoUrl = poll.ethLimoUrl;
       }
     }
   }
@@ -635,34 +642,15 @@ async function runEns(args: string[]) {
 
       if (process.stdin.isTTY) {
         info("Waiting for ENS contenthash update...");
-        const POLL_INTERVAL = 5_000;
-        const POLL_TIMEOUT = 300_000;
-        const start = Date.now();
-        let confirmed = false;
-        while (Date.now() - start < POLL_TIMEOUT) {
-          await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-          const poll = await pollEnsContenthash(ensName, cid, values["rpc-url"] || config.rpcUrl);
-          if (poll.confirmed) {
-            confirmed = true;
-            const ethLimoUrl = `https://${ensName.replace(/\.eth$/, "")}.eth.limo`;
-            console.log("");
-            success("ENS domain updated");
-            console.log("");
-            label("ENS", ensName);
-            label("URL", ethLimoUrl);
-            console.log("");
-            break;
-          }
-          if (process.stderr.isTTY) {
-            const elapsed = Math.round((Date.now() - start) / 1000);
-            process.stderr.write(`\r  ${c.dim}Polling... ${elapsed}s${c.reset}`);
-          }
-        }
-        if (process.stderr.isTTY) process.stderr.write("\r" + " ".repeat(30) + "\r");
-        if (!confirmed) {
+        const poll = await pollForEnsUpdate(ensName, cid, values["rpc-url"] || config.rpcUrl);
+        if (poll.confirmed) {
           console.log("");
-          info("ENS update not detected yet. It may still be pending.");
-          info(`Check: nova ens ${ensName}`);
+          success("ENS domain updated");
+          console.log("");
+          label("ENS", ensName);
+          label("URL", poll.ethLimoUrl!);
+          console.log("");
+        } else {
           console.log("");
         }
       }
@@ -827,14 +815,16 @@ async function runWallet(args: string[]) {
   }
 
   const isMainnet = !values.calibration;
-  const { createReadOnlySynapse, resolveWalletAddress } = await import("./auth.js");
+  const { createSynapse, createReadOnlySynapse, resolveWalletAddress } = await import("./auth.js");
   const { getBalance } = await import("viem/actions");
   const { balance: erc20Balance } = await import("@filoz/synapse-core/erc20");
   const { accounts: payAccounts } = await import("@filoz/synapse-core/pay");
 
   const auth = { pinKey: config.pinKey, walletAddress: config.walletAddress };
   const walletAddr = resolveWalletAddress(auth);
-  const synapse = createReadOnlySynapse(walletAddr, isMainnet);
+  const synapse = config.pinKey
+    ? createSynapse(auth, isMainnet)
+    : createReadOnlySynapse(walletAddr, isMainnet);
 
   info(`Querying ${isMainnet ? "mainnet" : "calibration"}...`);
 
@@ -844,14 +834,6 @@ async function runWallet(args: string[]) {
     erc20Balance(synapse.client, { address: walletAddr }).catch(() => null),
     payAccounts(synapse.client, { address: walletAddr }).catch(() => null),
   ]);
-
-  // Format values (18 decimals for FIL, variable for USDFC)
-  const formatToken = (val: bigint, decimals: number) => {
-    const whole = val / BigInt(10 ** decimals);
-    const frac = val % BigInt(10 ** decimals);
-    const fracStr = frac.toString().padStart(decimals, "0").slice(0, 4);
-    return `${whole}.${fracStr}`;
-  };
 
   if (jsonMode) {
     unmuteConsole();
@@ -1690,28 +1672,10 @@ async function runClone(args: string[]) {
 
       if (process.stdin.isTTY && !jsonMode) {
         info("Waiting for ENS contenthash update...");
-        const POLL_INTERVAL = 5_000;
-        const POLL_TIMEOUT = 300_000;
-        const start = Date.now();
-        let confirmed = false;
-        while (Date.now() - start < POLL_TIMEOUT) {
-          await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-          const poll = await pollEnsContenthash(ensName, deployResult.cid, values["rpc-url"] || config.rpcUrl);
-          if (poll.confirmed) {
-            confirmed = true;
-            deployResult.ensName = ensName;
-            deployResult.ethLimoUrl = `https://${ensName.replace(/\.eth$/, "")}.eth.limo`;
-            success(`ENS updated: ${c.bold}${deployResult.ethLimoUrl}${c.reset}`);
-            break;
-          }
-          if (process.stderr.isTTY) {
-            const elapsed = Math.round((Date.now() - start) / 1000);
-            process.stderr.write(`\r  ${c.dim}Polling... ${elapsed}s${c.reset}`);
-          }
-        }
-        if (process.stderr.isTTY) process.stderr.write("\r\x1b[K");
-        if (!confirmed) {
-          info("ENS update not detected within 5 minutes. You can sign it later at the URL above.");
+        const poll = await pollForEnsUpdate(ensName, deployResult.cid, values["rpc-url"] || config.rpcUrl);
+        if (poll.confirmed) {
+          deployResult.ensName = ensName;
+          deployResult.ethLimoUrl = poll.ethLimoUrl;
         }
       }
     }
@@ -1767,10 +1731,6 @@ async function runClone(args: string[]) {
   }
 }
 
-
-function isUrl(input: string): boolean {
-  return /^https?:\/\//i.test(input) || /^[a-z0-9-]+\.[a-z]{2,}/i.test(input);
-}
 
 async function runDemo(args: string[]) {
   if (args.includes("--help") || args.includes("-h")) {

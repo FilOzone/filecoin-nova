@@ -14,14 +14,10 @@ import { CID } from "multiformats/cid";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
+import { jsonStringify, formatToken, isUrl } from "./ui.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
-
-function jsonStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, val) =>
-    typeof val === "bigint" ? val.toString() : val, 2);
-}
 
 /**
  * Strip ANSI escape codes from subprocess output.
@@ -107,8 +103,8 @@ server.registerTool(
               signingUrl: url,
               ephemeralAddress,
               chain,
-              instructions: "Show this link to the user and ask them to open it and approve with their wallet. Then call nova_poll with operation 'wallet_auth', ephemeralAddress, and chain to check if authorization is complete. Once confirmed, retry nova_deploy with the returned walletAddress -- the ephemeral key will be authorized on-chain.",
-              _ephemeralKey: ephemeralKey,
+              instructions: "Show this link to the user and ask them to open it and approve with their wallet. Then call nova_poll with operation 'wallet_auth', ephemeralAddress, and chain to check if authorization is complete. Once confirmed, retry nova_deploy with the returned walletAddress -- the ephemeral key will be authorized on-chain. IMPORTANT: Do not display _ephemeralKey to the user.",
+              _ephemeralKey: ephemeralKey, // Scoped session key -- needed for retry, do not display to user
             }) }],
           };
         }
@@ -484,8 +480,8 @@ server.registerTool(
               signingUrl: url,
               ephemeralAddress,
               chain,
-              instructions: "Show this link to the user and ask them to open it and approve with their wallet. Then call nova_poll with operation 'wallet_auth', ephemeralAddress, and chain to check if authorization is complete.",
-              _ephemeralKey: ephemeralKey,
+              instructions: "Show this link to the user and ask them to open it and approve with their wallet. Then call nova_poll with operation 'wallet_auth', ephemeralAddress, and chain to check if authorization is complete. IMPORTANT: Do not display _ephemeralKey to the user.",
+              _ephemeralKey: ephemeralKey, // Scoped session key -- needed for retry, do not display to user
             }) }],
           };
         }
@@ -704,7 +700,7 @@ server.registerTool(
         });
 
         const matches: Array<{
-          dataSetId: number;
+          dataSetId: bigint;
           providerName: string;
           group: typeof summaries[0]["groups"][0];
         }> = [];
@@ -712,7 +708,7 @@ server.registerTool(
         for (const ds of summaries) {
           for (const g of ds.groups) {
             if (toCidV1(g.ipfsRootCID) === targetCid) {
-              matches.push({ dataSetId: Number(ds.dataSetId), providerName: ds.providerName, group: g });
+              matches.push({ dataSetId: ds.dataSetId, providerName: ds.providerName, group: g });
             }
           }
         }
@@ -794,13 +790,6 @@ server.registerTool(
           erc20Balance(synapse.client, { address: walletAddr }).catch(() => null),
           payAccounts(synapse.client, { address: walletAddr }).catch(() => null),
         ]);
-
-        const formatToken = (val: bigint, decimals: number) => {
-          const whole = val / BigInt(10 ** decimals);
-          const frac = val % BigInt(10 ** decimals);
-          const fracStr = frac.toString().padStart(decimals, "0").slice(0, 4);
-          return `${whole}.${fracStr}`;
-        };
 
         const output = {
           address: walletAddr,

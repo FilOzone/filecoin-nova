@@ -1,6 +1,6 @@
 {
   "name": "filecoin-nova",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Clone, deploy, and manage websites on Filecoin Onchain Cloud with ENS resolution",
   "type": "module",
   "main": "./dist/deploy.js",

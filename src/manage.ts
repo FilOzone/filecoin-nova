@@ -416,7 +416,7 @@ export async function cleanPieces(opts: StorageAuth & {
     // Deduplicate within kept CIDs (not for --remove)
     if (!opts.keepCopies) {
       for (const cid of keptCids) {
-        const group = target.groups.find((g) => g.ipfsRootCID === cid);
+        const group = target.groups.find((g) => toCidV1(g.ipfsRootCID) === toCidV1(cid));
         if (group && group.pieces.length > 1) {
           const sorted = [...group.pieces].sort((a, b) =>
             b.pieceId > a.pieceId ? 1 : b.pieceId < a.pieceId ? -1 : 0,

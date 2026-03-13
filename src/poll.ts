@@ -5,7 +5,7 @@
 
 import { ethers, Network } from "ethers";
 import { CID } from "multiformats/cid";
-import { createClient, http } from "viem";
+import { createClient, http, toEventSelector } from "viem";
 import { filecoin, filecoinCalibration } from "viem/chains";
 
 export interface PollResult {
@@ -130,13 +130,14 @@ export async function pollWalletAuth(
     const fromBlock = `0x${Math.max(0, latest - 2000).toString(16)}` as `0x${string}`;
 
     // Login event: Login(address indexed root, address indexed signer, ...)
+    const loginSelector = toEventSelector("Login(address,address,uint256,uint256)");
     const logs = await client.request({
       method: "eth_getLogs",
       params: [
         {
           address: registryAddr,
           topics: [
-            null, // Login event signature
+            loginSelector,
             null, // root (any -- we extract this)
             `0x000000000000000000000000${ephemeralAddress.slice(2).toLowerCase()}` as `0x${string}`,
           ],

@@ -8,6 +8,8 @@
 export const DEMO_SESSION_KEY = "0x7b029c6a96fdd59a3276749b2cea67497eda13d19176ae1c8be7c39cf37a807a";
 export const DEMO_WALLET_ADDRESS = "0x12e83c954051b7c91f70d001f80dc9ff91737b83";
 
+import { isUrl } from "./ui.js";
+
 export interface DemoResult {
   cid: string;
   gatewayUrl: string;
@@ -16,10 +18,6 @@ export interface DemoResult {
   cloned?: boolean;
   sourceUrl?: string;
   pages?: number;
-}
-
-function isUrl(input: string): boolean {
-  return /^https?:\/\//i.test(input) || /^[a-z0-9-]+\.[a-z]{2,}/i.test(input);
 }
 
 function normalizeUrl(input: string): string {
