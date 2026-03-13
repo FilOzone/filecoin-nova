@@ -773,10 +773,20 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
             const dk = ns ? ns.split("?")[0] : u.split("?")[0];
             return u.startsWith(canonicalOrigin) && !assetMap.has(u) && !assetMap.has(dk);
           });
-          for (const url of newSafariUrls) {
-            const asset = await fetchAsset(url, context.request);
-            if (asset) {
-              const { localPath, bytes } = saveAsset(url, asset.body, assetMap, canonicalOrigin, outDir);
+          const SAF_BATCH = 10;
+          for (let si = 0; si < newSafariUrls.length; si += SAF_BATCH) {
+            const batch = newSafariUrls.slice(si, si + SAF_BATCH);
+            const results = await Promise.allSettled(
+              batch.map(async (url) => {
+                const asset = await fetchAsset(url, context.request);
+                if (!asset) return null;
+                return { url, body: asset.body };
+              })
+            );
+            for (const r of results) {
+              if (r.status !== "fulfilled" || !r.value) continue;
+              const { url, body } = r.value;
+              const { localPath, bytes } = saveAsset(url, body, assetMap, canonicalOrigin, outDir);
               totalSize += bytes;
               assetCount++;
               info(`    ${c.green}+safari${c.reset} ${localPath} (${Math.round(bytes / 1024)}KB)`);

@@ -5,7 +5,7 @@ Nova - deploy and manage websites on Filecoin Onchain Cloud with ENS resolution.
 
 Single package with two entry points:
 - `nova` CLI - interactive deploy, ENS update, status check, storage management
-- `nova-mcp` - MCP server (5 tools for Claude Code, Claude Desktop, Cursor, Windsurf, VS Code)
+- `nova-mcp` - MCP server (11 tools for Claude Code, Claude Desktop, Cursor, Windsurf, VS Code)
 
 ## Architecture
 ```
@@ -42,7 +42,7 @@ src/deploy.ts    - Orchestrates upload + ENS
 src/ens.ts       - ENS contenthash encoding/updating/reading (ethers v6)
 src/archive.ts   - Archive detection and extraction to temp dir
 src/manage.ts    - Storage management (list pieces, clean duplicates/old deploys)
-src/mcp.ts       - MCP server (7 tools: deploy, demo, ens, status, manage, manage_clean, poll)
+src/mcp.ts       - MCP server (11 tools: deploy, demo, ens, status, manage, manage_clean, poll, clone, info, wallet, download)
 src/prompt.ts    - Readline wrapper (lazy init)
 src/config.ts    - Environment variable resolution (no credentials file)
 src/poll.ts      - On-chain state polling for browser wallet signing flows
@@ -138,7 +138,7 @@ Test fixes on the deployed clone via Playwright route interception before editin
 
 ### Done
 1. CLI engine: deploy + ENS + verify + `--json` + `--clean` ✅
-2. MCP server: 7 tools for Claude Code/Desktop/Cursor/Windsurf/VS Code ✅
+2. MCP server: 11 tools for Claude Code/Desktop/Cursor/Windsurf/VS Code ✅
 3. Storage management: list, clean, dedup, `--keep`/`--remove` ✅
 4. Enhanced status: pin lookup with CIDv0/v1 normalization ✅
 5. Browser wallet pages: ENS (ens.focify.eth.limo), Filecoin tx (fil.focify.eth.limo), session key (session.focify.eth.limo) ✅

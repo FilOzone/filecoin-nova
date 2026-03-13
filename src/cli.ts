@@ -1221,7 +1221,7 @@ async function runManage(args: string[]) {
         + ds.orphanPieces.filter(activePieces).length;
       const duplicates = ds.groups.reduce((sum, g) => {
         const active = g.pieces.filter(activePieces).length;
-        return sum + Math.max(0, active - 1);
+        return sum + Math.max(0, active - 2);
       }, 0);
       const removable = oldPieces + duplicates;
       if (removable > 0) {
@@ -1230,9 +1230,9 @@ async function runManage(args: string[]) {
           + ds.orphanPieces.filter(activePieces).reduce((s, p) => s + p.sizeBytes, 0);
         const dupSize = ds.groups.reduce((s, g) => {
           const active = g.pieces.filter(activePieces);
-          if (active.length <= 1) return s;
+          if (active.length <= 2) return s;
           const perPiece = active.reduce((ss, p) => ss + p.sizeBytes, 0) / active.length;
-          return s + perPiece * (active.length - 1);
+          return s + perPiece * (active.length - 2);
         }, 0);
         const savingStr = formatSize(oldSize + dupSize);
         if (oldPieces > 0 && duplicates > 0) {

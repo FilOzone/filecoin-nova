@@ -366,6 +366,12 @@ export async function cleanPieces(opts: StorageAuth & {
     throw new Error("No piece groups found in this dataset.");
   }
 
+  // Build a Map for O(1) group lookups by normalized CID
+  const groupByCidV1 = new Map<string, CIDGroup>();
+  for (const g of target.groups) {
+    groupByCidV1.set(toCidV1(g.ipfsRootCID), g);
+  }
+
   // Collect pieces to remove
   const piecesToRemove: PieceInfo[] = [];
   const keptCids: string[] = [];
@@ -374,8 +380,7 @@ export async function cleanPieces(opts: StorageAuth & {
     // Explicit removal: remove only the specified CIDs (normalize for v0/v1 comparison)
     const removeSetV1 = new Set(opts.removeCids.map(toCidV1));
     for (const cid of opts.removeCids) {
-      const cidV1 = toCidV1(cid);
-      if (!target.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1)) {
+      if (!groupByCidV1.has(toCidV1(cid))) {
         throw new Error(
           `CID ${cid} not found in dataset ${target.dataSetId}.`,
         );
@@ -396,8 +401,7 @@ export async function cleanPieces(opts: StorageAuth & {
     const keepSetV1 = new Set(keepCidsRaw.map(toCidV1));
 
     for (const cid of keepCidsRaw) {
-      const cidV1 = toCidV1(cid);
-      if (!target.groups.find((g) => toCidV1(g.ipfsRootCID) === cidV1)) {
+      if (!groupByCidV1.has(toCidV1(cid))) {
         throw new Error(
           `CID ${cid} not found in dataset ${target.dataSetId}.`,
         );
@@ -416,7 +420,7 @@ export async function cleanPieces(opts: StorageAuth & {
     // Deduplicate within kept CIDs (not for --remove)
     if (!opts.keepCopies) {
       for (const cid of keptCids) {
-        const group = target.groups.find((g) => toCidV1(g.ipfsRootCID) === toCidV1(cid));
+        const group = groupByCidV1.get(toCidV1(cid));
         if (group && group.pieces.length > 2) {
           const sorted = [...group.pieces].sort((a, b) =>
             b.pieceId > a.pieceId ? 1 : b.pieceId < a.pieceId ? -1 : 0,
