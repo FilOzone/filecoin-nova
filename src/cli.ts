@@ -109,6 +109,7 @@ const HELP = `
 
     ${c.dim}--ens <name>${c.reset}          ENS domain (e.g. desite.ezpdpz.eth)
     ${c.dim}--no-ens${c.reset}              Skip ENS prompt and ENS update
+    ${c.dim}--label <text>${c.reset}       Label for this deploy (shown in nova manage)
     ${c.dim}--rpc-url <url>${c.reset}       Ethereum RPC URL
     ${c.dim}--provider-id <id>${c.reset}    Storage provider ID
     ${c.dim}--wallet, -w <addr>${c.reset}  Wallet address (overrides NOVA_WALLET_ADDRESS)
@@ -411,7 +412,7 @@ async function runStatus(args: string[]) {
 
   // Check pin status if we have storage auth and a CID
   let pinStatus: { totalPieces: number; activePieces: number; pendingRemoval: number } | null = null;
-  if (cid && hasStorageAuth(config)) {
+  if (cid && hasWalletAddress(config)) {
     try {
       const cidV1 = toCidV1(cid);
       const summaries = await listPieces({ pinKey: config.pinKey, walletAddress: config.walletAddress, mainnet: true });
@@ -515,7 +516,7 @@ async function runEns(args: string[]) {
 
     // Check pin status if we have storage auth and a CID
     let pinStatus: { totalPieces: number; activePieces: number; pendingRemoval: number } | null = null;
-    if (cid && hasStorageAuth(config)) {
+    if (cid && hasWalletAddress(config)) {
       try {
         const cidV1 = toCidV1(cid);
         const summaries = await listPieces({ pinKey: config.pinKey, walletAddress: config.walletAddress, mainnet: true });
@@ -1353,8 +1354,8 @@ async function runManage(args: string[]) {
           keptCids.push(g.ipfsRootCID);
           // Dedup within kept groups (only active pieces)
           const active = activeCount(g);
-          if (!keepCopies && active > 1) {
-            duplicatesToRemove += active - 1;
+          if (!keepCopies && active > 2) {
+            duplicatesToRemove += active - 2;
           }
         } else {
           const active = activeCount(g);
@@ -1385,7 +1386,7 @@ async function runManage(args: string[]) {
     console.log("");
     if (!hasRemoveFlag) {
       for (const cid of keptCids) {
-        label("Keep", `${cid} (1 piece)`);
+        label("Keep", `${cid} (2 copies)`);
       }
       console.log("");
     }
@@ -1404,8 +1405,8 @@ async function runManage(args: string[]) {
         const g = target.groups.find((g) => g.ipfsRootCID === cid);
         if (g) {
           const active = activeCount(g);
-          if (active > 1) {
-            labelDim("Delete", `${active - 1} duplicate upload(s) of ${cid}`);
+          if (active > 2) {
+            labelDim("Delete", `${active - 2} duplicate upload(s) of ${cid}`);
           }
         }
       }
@@ -1509,6 +1510,9 @@ async function runClone(args: string[]) {
     ${c.dim}--screenshots${c.reset}         Save before/after screenshot comparison
     ${c.dim}--ens <name>${c.reset}          ENS domain to update after deploy
     ${c.dim}--no-ens${c.reset}              Skip ENS prompt and ENS update
+    ${c.dim}--label <text>${c.reset}        Label for this deploy (shown in nova manage)
+    ${c.dim}--provider-id <id>${c.reset}    Storage provider ID
+    ${c.dim}--wallet, -w <addr>${c.reset}  Wallet address (overrides NOVA_WALLET_ADDRESS)
     ${c.dim}--clean${c.reset}               Remove old pieces after deploy
     ${c.dim}--calibration${c.reset}         Deploy to calibration testnet
     ${c.dim}--json${c.reset}                Output result as JSON

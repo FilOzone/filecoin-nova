@@ -1114,6 +1114,30 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
             + `})()`;
           document.head.insertBefore(nis, document.head.firstChild);
 
+          // Anchor href interceptor: frameworks (Nuxt/Vue, Next.js) hydrate
+          // and overwrite rewritten hrefs with original absolute URLs from
+          // their JS bundle data.  Intercept the href setter on
+          // HTMLAnchorElement.prototype to strip the canonical origin so
+          // navigation stays within the clone.
+          const safeCanon = canonOrigin.replace(/'/g, "\\'");
+          const safeWww = wwwVariant.replace(/'/g, "\\'");
+          const ahs = document.createElement("script");
+          ahs.textContent = `(function(){`
+            + `var O=['${safeCanon}','${safeWww}'];`
+            + `var dh=Object.getOwnPropertyDescriptor(HTMLAnchorElement.prototype,'href');`
+            + `if(!dh||!dh.set)return;`
+            + `Object.defineProperty(HTMLAnchorElement.prototype,'href',{`
+            +   `set:function(v){`
+            +     `if(typeof v==='string'){for(var i=0;i<O.length;i++){`
+            +       `if(v.indexOf(O[i])===0){v=v.substring(O[i].length)||'/';break}`
+            +     `}}`
+            +     `dh.set.call(this,v)`
+            +   `},`
+            +   `get:dh.get,configurable:true`
+            + `});`
+            + `})()`;
+          document.head.insertBefore(ahs, document.head.firstChild);
+
           // MutationObserver for dynamically-created elements:
           // 1. Video muted: React/Vue set muted via JS property, not HTML attribute;
           //    Safari blocks autoplay without it.
@@ -1126,7 +1150,24 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
           //    elements and strips srcset so the browser falls back to src
           //    (already rewritten to the correct local path).
           const ms = document.createElement("script");
-          ms.textContent = `new MutationObserver(m=>m.forEach(r=>r.addedNodes.forEach(n=>{if(n.tagName==='IMG'&&n.getAttribute('data-nimg')){n.removeAttribute('data-nimg');n.removeAttribute('srcset')}if(n.querySelectorAll){for(const v of n.querySelectorAll('video[autoplay]:not([muted])'))v.setAttribute('muted','');for(const i of n.querySelectorAll('img[crossorigin]'))i.removeAttribute('crossorigin');for(const i of n.querySelectorAll('img[data-nimg]')){i.removeAttribute('data-nimg');i.removeAttribute('srcset')}}}))).observe(document.documentElement,{childList:true,subtree:true})`;
+          ms.textContent = `(function(){`
+            + `var O=['${safeCanon}','${safeWww}'];`
+            + `function fixH(a){var h=a.getAttribute('href');if(!h)return;for(var i=0;i<O.length;i++){if(h.indexOf(O[i])===0){a.setAttribute('href',h.substring(O[i].length)||'/');return}}}`
+            + `function fixN(n){`
+            +   `if(n.tagName==='IMG'&&n.getAttribute('data-nimg')){n.removeAttribute('data-nimg');n.removeAttribute('srcset')}`
+            +   `if(n.tagName==='A')fixH(n);`
+            +   `if(n.querySelectorAll){`
+            +     `for(var v of n.querySelectorAll('video[autoplay]:not([muted])'))v.setAttribute('muted','');`
+            +     `for(var i of n.querySelectorAll('img[crossorigin]'))i.removeAttribute('crossorigin');`
+            +     `for(var i2 of n.querySelectorAll('img[data-nimg]')){i2.removeAttribute('data-nimg');i2.removeAttribute('srcset')}`
+            +     `for(var a of n.querySelectorAll('a[href]'))fixH(a);`
+            +   `}`
+            + `}`
+            + `new MutationObserver(function(m){m.forEach(function(r){`
+            +   `if(r.type==='attributes'&&r.target.tagName==='A')fixH(r.target);`
+            +   `r.addedNodes.forEach(fixN)`
+            + `})}).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['href']})`
+            + `})()`;
           document.head.prepend(ms);
 
           // Inject API response cache -- frameworks (Nuxt, Next.js, React) re-fetch

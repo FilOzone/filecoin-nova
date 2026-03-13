@@ -391,8 +391,8 @@ server.registerTool(
     description:
       "List all pinned pieces for this wallet, grouped by IPFS root CID. " +
       "Shows piece counts, sizes, and identifies old/duplicate uploads that can be cleaned up. " +
-      "Each group has 'activePieces' (not pending removal) and 'duplicateActivePieces' (active copies beyond the first - these are redundant and can be removed with nova_manage_clean). " +
-      "Only 1 active piece per CID is needed. If duplicateActivePieces > 0, suggest cleanup. " +
+      "Each group has 'activePieces' (not pending removal) and 'duplicateActivePieces' (active copies beyond the 2 stored by default). " +
+      "Nova stores 2 copies per upload for redundancy. If duplicateActivePieces > 0, suggest cleanup. " +
       "Pieces with pendingRemoval=true are already scheduled for deletion. " +
       "Auth: set NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY) env var.",
     inputSchema: z.object({
@@ -674,7 +674,7 @@ server.registerTool(
     inputSchema: z.object({
       cid: z.string().describe("IPFS CID to look up"),
       walletAddress: z.string().optional().describe("Wallet address (overrides NOVA_WALLET_ADDRESS env var)"),
-      mainnet: z.boolean().optional().describe("Use mainnet (default: true)"),
+      calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
   },
   async (params): Promise<CallToolResult> => {
@@ -690,7 +690,7 @@ server.registerTool(
           };
         }
 
-        const isMainnet = params.mainnet !== false;
+        const isMainnet = !params.calibration;
         const targetCid = toCidV1(params.cid);
 
         const summaries = await listPieces({
@@ -757,7 +757,7 @@ server.registerTool(
       "Requires NOVA_WALLET_ADDRESS (or NOVA_PIN_KEY) env var.",
     inputSchema: z.object({
       walletAddress: z.string().optional().describe("Wallet address (overrides NOVA_WALLET_ADDRESS env var)"),
-      mainnet: z.boolean().optional().describe("Use mainnet (default: true)"),
+      calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
   },
   async (params): Promise<CallToolResult> => {
@@ -773,7 +773,7 @@ server.registerTool(
           };
         }
 
-        const isMainnet = params.mainnet !== false;
+        const isMainnet = !params.calibration;
         const { createSynapse, createReadOnlySynapse, resolveWalletAddress } = await import("./auth.js");
         const { getBalance } = await import("viem/actions");
         const { balance: erc20Balance } = await import("@filoz/synapse-core/erc20");

@@ -296,9 +296,11 @@ For **permanent hosting**:
 | Flag | Commands | What it does |
 |------|----------|-------------|
 | `--no-deploy` | clone | Capture only, don't deploy |
+| `--no-ens` | clone, deploy | Skip ENS prompt and ENS update |
 | `--max-pages <n>` | clone, demo | Max pages to crawl (default: 50, 0 = unlimited). Includes sitemap-discovered pages. Top-level pages are prioritised over deep links. |
 | `--screenshots` | clone | Save before/after comparison |
 | `--output <dir>` | clone | Output directory |
+| `--label <text>` | clone, deploy | Label for this deploy (shown in `nova manage`) |
 | `--ens <name>` | clone, deploy, ens | ENS domain (e.g. `mysite.eth`) |
 | `--rpc-url <url>` | clone, deploy, ens | Custom Ethereum RPC |
 | `--provider-id <id>` | clone, deploy | Storage provider ID |
@@ -309,7 +311,7 @@ For **permanent hosting**:
 | `--really-do-it` | manage clean | Execute the cleanup |
 | `--keep <cid,...>` | manage clean | Keep specific CIDs, remove the rest |
 | `--remove <cid,...>` | manage clean | Remove specific CIDs only |
-| `--keep-copies` | manage clean | Keep duplicate uploads |
+| `--keep-copies` | manage clean | Keep all copies (Nova stores 2 copies by default for redundancy) |
 | `--dataset-id <id>` | manage | Target a specific dataset |
 
 ---

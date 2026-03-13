@@ -123,7 +123,7 @@ nova_manage_clean({
 
 ## Auth Model
 
-Nova has three auth levels, from easiest to most permanent:
+Nova has four auth levels, from easiest to most permanent:
 
 1. **No auth (nova_demo)** -- works instantly, calibration testnet, free
 2. **Wallet address only (read-only)** -- for `nova_info`, `nova_wallet`, `nova_manage` (list). Set `NOVA_WALLET_ADDRESS` env var or pass `walletAddress` param or use `--wallet`/`-w` flag.

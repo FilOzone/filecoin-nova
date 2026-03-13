@@ -234,7 +234,7 @@ export async function listPieces(opts: StorageAuth & {
         pieces: gPieces,
         totalPieces: gPieces.length,
         activePieces: active,
-        duplicateActivePieces: Math.max(0, active - 1),
+        duplicateActivePieces: Math.max(0, active - 2),
         totalSizeBytes: gPieces.reduce((sum, p) => sum + p.sizeBytes, 0),
         totalRawSizeBytes: rawSizes.length > 0 ? rawSizes[rawSizes.length - 1] : null,
         lowestPieceId: ids.reduce((a, b) => (a < b ? a : b)),
@@ -417,11 +417,11 @@ export async function cleanPieces(opts: StorageAuth & {
     if (!opts.keepCopies) {
       for (const cid of keptCids) {
         const group = target.groups.find((g) => toCidV1(g.ipfsRootCID) === toCidV1(cid));
-        if (group && group.pieces.length > 1) {
+        if (group && group.pieces.length > 2) {
           const sorted = [...group.pieces].sort((a, b) =>
             b.pieceId > a.pieceId ? 1 : b.pieceId < a.pieceId ? -1 : 0,
           );
-          piecesToRemove.push(...sorted.slice(1));
+          piecesToRemove.push(...sorted.slice(2));
         }
       }
     }
