@@ -316,14 +316,99 @@ For **permanent hosting**:
 
 ---
 
-## CI / GitHub Actions
+## GitHub Action
+
+Nova provides a GitHub Action for automated deploys on every push or pull request.
+
+### Basic deploy on push
 
 ```yaml
-env:
-  NOVA_PIN_KEY: ${{ secrets.NOVA_PIN_KEY }}
+name: Deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: FilOzone/filecoin-nova/.github/action@main
+        with:
+          path: ./public
+        env:
+          NOVA_PIN_KEY: ${{ secrets.NOVA_PIN_KEY }}
+```
 
-steps:
-  - run: npx filecoin-nova deploy ./dist --json
+### Build + deploy + ENS + PR previews
+
+```yaml
+name: Deploy
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: FilOzone/filecoin-nova/.github/action@main
+        id: nova
+        with:
+          build-command: 'npm ci && npm run build'
+          path: ./dist
+          ens-name: ${{ github.ref == 'refs/heads/main' && 'mysite.eth' || '' }}
+          clean: ${{ github.ref == 'refs/heads/main' }}
+          calibration: ${{ github.event_name == 'pull_request' }}
+          label: ${{ github.sha }}
+        env:
+          NOVA_PIN_KEY: ${{ secrets.NOVA_PIN_KEY }}
+          NOVA_ENS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.NOVA_ENS_KEY || '' }}
+```
+
+PR pushes deploy to calibnet (no secrets needed), main pushes deploy to mainnet with ENS and cleanup.
+
+### Inputs
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `path` | `.` | Directory to deploy |
+| `build-command` | | Build command to run first |
+| `node-version` | `22` | Node.js version |
+| `ens-name` | | ENS domain to update |
+| `label` | | Deployment label |
+| `provider-id` | | Target specific storage provider |
+| `clean` | `false` | Remove old pieces after deploy |
+| `calibration` | `false` | Use calibration testnet |
+| `comment` | `true` | Post PR comment with deploy URL |
+| `nova-version` | `latest` | Nova version to install |
+
+### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `cid` | IPFS CID of the deployed content |
+| `gateway-url` | IPFS gateway URL |
+| `ens-url` | ENS gateway URL (if ENS was updated) |
+| `tx-hash` | ENS update transaction hash |
+
+### Auth
+
+Pass auth via environment variables. For calibnet deploys without `NOVA_PIN_KEY`, the action automatically uses demo mode (no secrets needed).
+
+| Variable | Required | What it does |
+|----------|----------|-------------|
+| `NOVA_PIN_KEY` | For mainnet | Filecoin private key |
+| `NOVA_ENS_KEY` | For ENS | Ethereum private key for ENS updates |
+
+### Rollback
+
+Content on Filecoin is immutable. To roll back, point ENS to a previous CID:
+
+```bash
+nova ens <old-cid> --ens mysite.eth
 ```
 
 ---

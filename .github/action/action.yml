@@ -1,0 +1,233 @@
+name: 'Nova Deploy'
+description: 'Deploy static sites to Filecoin Onchain Cloud'
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+
+inputs:
+  path:
+    description: 'Directory to deploy'
+    required: false
+    default: '.'
+  build-command:
+    description: 'Build command to run first (e.g. npm ci && npm run build)'
+    required: false
+  node-version:
+    description: 'Node.js version'
+    required: false
+    default: '22'
+  ens-name:
+    description: 'ENS domain to update after deploy'
+    required: false
+  label:
+    description: 'Deployment label (shown in nova manage)'
+    required: false
+  provider-id:
+    description: 'Target specific storage provider'
+    required: false
+  clean:
+    description: 'Remove old pieces after deploy (destructive)'
+    required: false
+    default: 'false'
+  calibration:
+    description: 'Deploy to calibration testnet'
+    required: false
+    default: 'false'
+  comment:
+    description: 'Post PR comment with deploy URL'
+    required: false
+    default: 'true'
+  nova-version:
+    description: 'Nova version to install'
+    required: false
+    default: 'latest'
+
+outputs:
+  cid:
+    description: 'IPFS CID of the deployed content'
+    value: ${{ steps.deploy.outputs.cid }}
+  gateway-url:
+    description: 'IPFS gateway URL'
+    value: ${{ steps.deploy.outputs.gateway-url }}
+  ens-url:
+    description: 'ENS gateway URL (if ENS was updated)'
+    value: ${{ steps.deploy.outputs.ens-url }}
+  tx-hash:
+    description: 'ENS update transaction hash'
+    value: ${{ steps.deploy.outputs.tx-hash }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Install Nova
+      shell: bash
+      env:
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      run: npm install -g filecoin-nova@${{ inputs.nova-version }}
+
+    - name: Build
+      if: inputs.build-command != ''
+      shell: bash
+      run: ${{ inputs.build-command }}
+
+    - name: Deploy
+      id: deploy
+      shell: bash
+      env:
+        NOVA_PIN_KEY: ${{ env.NOVA_PIN_KEY }}
+        NOVA_ENS_KEY: ${{ env.NOVA_ENS_KEY }}
+        NOVA_WALLET_ADDRESS: ${{ env.NOVA_WALLET_ADDRESS }}
+        NOVA_RPC_URL: ${{ env.NOVA_RPC_URL }}
+        NOVA_PROVIDER_ID: ${{ inputs.provider-id }}
+      run: |
+        # Build the nova command
+        ARGS="${{ inputs.path }} --json"
+
+        if [ "${{ inputs.ens-name }}" != "" ]; then
+          ARGS="$ARGS --ens ${{ inputs.ens-name }}"
+        else
+          ARGS="$ARGS --no-ens"
+        fi
+
+        if [ "${{ inputs.label }}" != "" ]; then
+          ARGS="$ARGS --label ${{ inputs.label }}"
+        fi
+
+        if [ "${{ inputs.provider-id }}" != "" ]; then
+          ARGS="$ARGS --provider-id ${{ inputs.provider-id }}"
+        fi
+
+        if [ "${{ inputs.clean }}" = "true" ]; then
+          ARGS="$ARGS --clean --really-do-it"
+        fi
+
+        if [ "${{ inputs.calibration }}" = "true" ]; then
+          ARGS="$ARGS --calibration"
+        fi
+
+        # Use demo mode for calibnet when no NOVA_PIN_KEY is set
+        if [ "${{ inputs.calibration }}" = "true" ] && [ -z "$NOVA_PIN_KEY" ]; then
+          CMD="nova demo"
+          # demo doesn't support --clean, --label, --provider-id, --calibration flags
+          ARGS="${{ inputs.path }} --json"
+        else
+          CMD="nova deploy"
+        fi
+
+        echo "Running: $CMD $ARGS"
+        RESULT=$($CMD $ARGS)
+
+        echo "Result: $RESULT"
+
+        # Parse JSON output
+        CID=$(echo "$RESULT" | jq -r '.cid // empty')
+        GATEWAY_URL=$(echo "$RESULT" | jq -r '.gatewayUrl // empty')
+        ENS_NAME=$(echo "$RESULT" | jq -r '.ensName // empty')
+        TX_HASH=$(echo "$RESULT" | jq -r '.txHash // empty')
+        ETH_LIMO_URL=$(echo "$RESULT" | jq -r '.ethLimoUrl // empty')
+        ERROR=$(echo "$RESULT" | jq -r '.error // empty')
+
+        if [ -n "$ERROR" ]; then
+          echo "::error::Nova deploy failed: $ERROR"
+          exit 1
+        fi
+
+        if [ -z "$CID" ]; then
+          echo "::error::Nova deploy failed: no CID in output"
+          echo "Raw output: $RESULT"
+          exit 1
+        fi
+
+        # Set outputs
+        echo "cid=$CID" >> "$GITHUB_OUTPUT"
+        echo "gateway-url=$GATEWAY_URL" >> "$GITHUB_OUTPUT"
+        if [ -n "$ETH_LIMO_URL" ]; then
+          echo "ens-url=$ETH_LIMO_URL" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -n "$TX_HASH" ]; then
+          echo "tx-hash=$TX_HASH" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Write step summary
+        NETWORK="mainnet"
+        if [ "${{ inputs.calibration }}" = "true" ]; then
+          NETWORK="calibration"
+        fi
+
+        {
+          echo ""
+          echo "### Nova Deploy"
+          echo ""
+          echo "| | |"
+          echo "|---|---|"
+          echo "| **CID** | \`$CID\` |"
+          echo "| **Gateway** | $GATEWAY_URL |"
+          echo "| **Network** | $NETWORK |"
+          if [ -n "$ENS_NAME" ]; then
+            echo "| **ENS** | $ENS_NAME |"
+          fi
+          if [ -n "$ETH_LIMO_URL" ]; then
+            echo "| **ENS URL** | $ETH_LIMO_URL |"
+          fi
+          if [ -n "$TX_HASH" ]; then
+            echo "| **Tx** | \`$TX_HASH\` |"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: PR Comment
+      if: github.event_name == 'pull_request' && inputs.comment == 'true' && steps.deploy.outputs.cid != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        CID="${{ steps.deploy.outputs.cid }}"
+        GATEWAY_URL="${{ steps.deploy.outputs.gateway-url }}"
+        ENS_URL="${{ steps.deploy.outputs.ens-url }}"
+
+        NETWORK="mainnet"
+        if [ "${{ inputs.calibration }}" = "true" ]; then
+          NETWORK="calibration"
+        fi
+
+        BODY="### Nova Deploy Preview"
+        BODY=$(printf '%s\n\n%s\n%s\n%s\n%s\n%s' \
+          "$BODY" \
+          "| | |" \
+          "|---|---|" \
+          "| **CID** | \`$CID\` |" \
+          "| **Gateway** | $GATEWAY_URL |" \
+          "| **Network** | $NETWORK |")
+
+        if [ -n "$ENS_URL" ]; then
+          BODY=$(printf '%s\n%s' "$BODY" "| **ENS** | $ENS_URL |")
+        fi
+
+        BODY=$(printf '%s\n\n%s\n%s\n%s' \
+          "$BODY" \
+          "---" \
+          "*Deployed to [Filecoin Onchain Cloud](https://filecoin.cloud) with [Nova](https://github.com/FilOzone/filecoin-nova)*" \
+          "<!-- nova-deploy-comment -->")
+
+        # Find existing Nova comment
+        COMMENT_ID=$(gh api \
+          "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+          --jq '.[] | select(.body | contains("<!-- nova-deploy-comment -->")) | .id' \
+          2>/dev/null | head -1)
+
+        if [ -n "$COMMENT_ID" ]; then
+          # Update existing comment
+          gh api \
+            "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+            -X PATCH \
+            -f body="$BODY"
+        else
+          # Create new comment
+          gh api \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            -f body="$BODY"
+        fi

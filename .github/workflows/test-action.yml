@@ -1,0 +1,52 @@
+name: Test Nova Action
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/action/**'
+      - '.github/workflows/test-action.yml'
+  pull_request:
+    paths:
+      - '.github/action/**'
+      - '.github/workflows/test-action.yml'
+
+jobs:
+  deploy-calibnet:
+    name: Deploy test site to calibnet
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create test site
+        run: |
+          mkdir -p test-site
+          echo '<!DOCTYPE html><html><head><title>Nova Action Test</title></head><body><h1>Nova GitHub Action Test</h1><p>Commit: ${{ github.sha }}</p><p>Ref: ${{ github.ref }}</p></body></html>' > test-site/index.html
+
+      - name: Deploy to calibnet
+        id: deploy
+        uses: ./.github/action
+        with:
+          path: ./test-site
+          calibration: 'true'
+          label: 'action-test-${{ github.sha }}'
+          comment: ${{ github.event_name == 'pull_request' }}
+
+      - name: Verify outputs
+        run: |
+          echo "CID: ${{ steps.deploy.outputs.cid }}"
+          echo "Gateway: ${{ steps.deploy.outputs.gateway-url }}"
+
+          if [ -z "${{ steps.deploy.outputs.cid }}" ]; then
+            echo "::error::Missing CID output"
+            exit 1
+          fi
+
+          if [ -z "${{ steps.deploy.outputs.gateway-url }}" ]; then
+            echo "::error::Missing gateway-url output"
+            exit 1
+          fi
+
+          echo "All outputs verified"
