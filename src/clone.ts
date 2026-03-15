@@ -403,7 +403,13 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   // Step 0: Resolve canonical origin (follow redirects)
   info("Resolving URL...");
   const probePage = await context.newPage();
-  await probePage.goto(config.url, { waitUntil: "domcontentloaded", timeout: 15000 });
+  try {
+    await probePage.goto(config.url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  } catch (probeErr: any) {
+    // Timeout is OK -- slow sites may not fire domcontentloaded quickly,
+    // but the page URL is already resolved after the redirect chain completes.
+    if (!probeErr.message?.includes("Timeout")) throw probeErr;
+  }
   const canonicalUrl = new URL(probePage.url());
   const canonicalOrigin = canonicalUrl.origin;
   await probePage.close();
@@ -607,6 +613,19 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
       const domUrls = await page.evaluate(() => {
         const urls: string[] = [];
         const base = document.baseURI;
+        const cssUrlRe = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+        function extractCssUrls(css: string) {
+          cssUrlRe.lastIndex = 0;
+          let m: RegExpExecArray | null;
+          while ((m = cssUrlRe.exec(css)) !== null) {
+            const ref = m[2];
+            if (ref.startsWith("data:")) continue;
+            try {
+              const u = new URL(ref, base);
+              if (u.protocol === "http:" || u.protocol === "https:") urls.push(u.href);
+            } catch {}
+          }
+        }
         for (const el of document.querySelectorAll("*")) {
           const isAnchor = el.tagName === "A";
           for (const attr of el.attributes) {
@@ -615,6 +634,11 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
             const val = attr.value.trim();
             if (!val || val.length > 2000) continue;
             if (val.startsWith("data:") || val.startsWith("javascript:") || val.startsWith("#")) continue;
+            // Extract url() references from inline style attributes
+            if (attr.name === "style") {
+              extractCssUrls(val);
+              continue;
+            }
             if (val.includes(",") && /\s\d+[wx]/.test(val)) {
               for (const entry of val.split(",")) {
                 const raw = entry.trim().split(/\s+/)[0];
@@ -633,6 +657,10 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
               if (u.protocol === "http:" || u.protocol === "https:") urls.push(u.href);
             } catch {}
           }
+        }
+        // Scan inline <style> blocks for url() references (@font-face, background-image, etc.)
+        for (const style of document.querySelectorAll("style")) {
+          if (style.textContent) extractCssUrls(style.textContent);
         }
         return urls;
       });
@@ -768,7 +796,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
               if (u) { try { safariMediaUrls.push(new URL(u, currentUrl).href); } catch {} }
             }
           }
-          const newSafariUrls = safariMediaUrls.filter(u => {
+          const newSafariUrls = [...new Set(safariMediaUrls)].filter(u => {
             const ns = extractNextImageSource(u, canonicalOrigin);
             const dk = ns ? ns.split("?")[0] : u.split("?")[0];
             return u.startsWith(canonicalOrigin) && !assetMap.has(u) && !assetMap.has(dk);
@@ -822,6 +850,21 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   console.log("");
 
   // Scan CSS for url() references not triggered during browsing
+  const urlPattern = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+  function extractUrlRefs(css: string, baseUrl: string) {
+    urlPattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = urlPattern.exec(css)) !== null) {
+      const ref = m[2];
+      if (ref.startsWith("data:")) continue;
+      try {
+        const abs = new URL(ref, baseUrl).href;
+        if (abs.startsWith("http")) deferredUrls.add(abs);
+      } catch {}
+    }
+  }
+
+  // External CSS files
   const scannedCss = new Set<string>();
   for (const [cssOrigUrl, localPath] of assetMap) {
     if (extname(localPath).toLowerCase() !== ".css") continue;
@@ -830,16 +873,22 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
     const cssPath = join(outDir, localPath);
     if (!existsSync(cssPath)) continue;
     try {
-      const css = readFileSync(cssPath, "utf-8");
-      const urlPattern = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
-      let m: RegExpExecArray | null;
-      while ((m = urlPattern.exec(css)) !== null) {
-        const ref = m[2];
-        if (ref.startsWith("data:")) continue;
-        try {
-          const abs = new URL(ref, cssOrigUrl).href;
-          if (abs.startsWith("http")) deferredUrls.add(abs);
-        } catch {}
+      extractUrlRefs(readFileSync(cssPath, "utf-8"), cssOrigUrl);
+    } catch {}
+  }
+
+  // Inline <style> blocks in saved HTML pages
+  const styleTagRe = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+  for (const [pageOrigUrl, localPath] of assetMap) {
+    if (extname(localPath).toLowerCase() !== ".html") continue;
+    const htmlPath = join(outDir, localPath);
+    if (!existsSync(htmlPath)) continue;
+    try {
+      const html = readFileSync(htmlPath, "utf-8");
+      let sm: RegExpExecArray | null;
+      styleTagRe.lastIndex = 0;
+      while ((sm = styleTagRe.exec(html)) !== null) {
+        extractUrlRefs(sm[1], pageOrigUrl);
       }
     } catch {}
   }
