@@ -796,11 +796,18 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
               if (u) { try { safariMediaUrls.push(new URL(u, currentUrl).href); } catch {} }
             }
           }
-          const newSafariUrls = [...new Set(safariMediaUrls)].filter(u => {
+          // Dedup by URL without query params -- srcset entries like
+          // image.jpg?width=300, image.jpg?width=600, image.jpg?width=900
+          // are different URLs but the same file.
+          const safariDedup = new Map<string, string>();
+          for (const u of new Set(safariMediaUrls)) {
+            if (!u.startsWith(canonicalOrigin)) continue;
             const ns = extractNextImageSource(u, canonicalOrigin);
             const dk = ns ? ns.split("?")[0] : u.split("?")[0];
-            return u.startsWith(canonicalOrigin) && !assetMap.has(u) && !assetMap.has(dk);
-          });
+            if (assetMap.has(u) || assetMap.has(dk) || safariDedup.has(dk)) continue;
+            safariDedup.set(dk, u);
+          }
+          const newSafariUrls = [...safariDedup.values()];
           const SAF_BATCH = 10;
           for (let si = 0; si < newSafariUrls.length; si += SAF_BATCH) {
             const batch = newSafariUrls.slice(si, si + SAF_BATCH);
