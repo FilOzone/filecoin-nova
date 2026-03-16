@@ -408,6 +408,18 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
     Object.defineProperty(navigator, "webdriver", { get: () => false });
   });
 
+  /** Wait for security challenge pages (Vercel, Cloudflare) to resolve. */
+  async function waitForChallenge(pg: import("playwright").Page): Promise<void> {
+    const title = await pg.title();
+    if (/vercel.*security|security.*checkpoint|cloudflare|checking your browser/i.test(title)) {
+      info("  Waiting for security challenge...");
+      await pg.waitForFunction(
+        () => !/vercel|security.*checkpoint|cloudflare|checking your browser/i.test(document.title),
+        { timeout: 30000 },
+      ).catch(() => {});
+    }
+  }
+
   // Step 0: Resolve canonical origin (follow redirects)
   info("Resolving URL...");
   const probePage = await context.newPage();
@@ -418,6 +430,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
     // but the page URL is already resolved after the redirect chain completes.
     if (!probeErr.message?.includes("Timeout")) throw probeErr;
   }
+  await waitForChallenge(probePage);
   const canonicalUrl = new URL(probePage.url());
   const canonicalOrigin = canonicalUrl.origin;
   await probePage.close();
@@ -595,6 +608,7 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
         // Re-throw non-timeout errors (DNS failure, connection refused, etc.)
         if (!navErr.message?.includes("Timeout")) throw navErr;
       }
+      await waitForChallenge(page);
 
       // If we got redirected off-domain, skip this page entirely
       // (page.close() handled by finally block)
