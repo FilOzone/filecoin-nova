@@ -60,6 +60,10 @@ async function pollForEnsUpdate(
   while (Date.now() - start < POLL_TIMEOUT) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL));
     const poll = await pollEnsContenthash(ensName, cid, rpcUrl);
+    if (poll.error) {
+      fail(poll.error);
+      return { confirmed: false };
+    }
     if (poll.confirmed) {
       const ethLimoUrl = `https://${ensName.replace(/\.eth$/, "")}.eth.limo`;
       success(`ENS updated: ${c.bold}${ethLimoUrl}${c.reset}`);

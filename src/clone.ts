@@ -389,7 +389,10 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   let detectedDefaultLocale: string | undefined;
   let detectedLocaleCodes: string[] = [];
 
-  const browser = await playwright.chromium.launch({ headless: true });
+  const browser = await playwright.chromium.launch({
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
   try {
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
@@ -398,6 +401,11 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
     serviceWorkers: "block",
     bypassCSP: true,
     ignoreHTTPSErrors: true,
+  });
+
+  // Hide automation signals to bypass bot detection (Vercel, Cloudflare challenges)
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
   });
 
   // Step 0: Resolve canonical origin (follow redirects)

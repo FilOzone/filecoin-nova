@@ -231,7 +231,7 @@ export async function listPieces(opts: StorageAuth & {
       groups.push({
         ipfsRootCID: cid,
         label: groupLabel,
-        pieces: gPieces,
+        pieces: sortedByIdDesc,
         totalPieces: gPieces.length,
         activePieces: active,
         duplicateActivePieces: Math.max(0, active - 2),
@@ -294,12 +294,9 @@ export async function listPieces(opts: StorageAuth & {
         }
       }
 
-      // Update group-level fields
+      // Update group-level fields (pieces already sorted by pieceId descending)
       for (const group of summary.groups) {
-        const sortedByIdDesc = [...group.pieces].sort((a, b) =>
-          b.pieceId > a.pieceId ? 1 : b.pieceId < a.pieceId ? -1 : 0,
-        );
-        const latestPiece = sortedByIdDesc[0];
+        const latestPiece = group.pieces[0];
         group.createdAt = latestPiece?.createdAt ?? null;
         group.lastProvenAt = latestPiece?.lastProvenAt ?? null;
         group.totalProofsSubmitted = latestPiece?.totalProofsSubmitted ?? null;
