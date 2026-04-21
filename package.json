@@ -1,6 +1,6 @@
 {
   "name": "filecoin-nova",
-  "version": "0.6.4",
+  "version": "0.7.1",
   "description": "Clone, deploy, and manage websites on Filecoin Onchain Cloud with ENS resolution",
   "type": "module",
   "main": "./dist/deploy.js",
@@ -24,7 +24,7 @@
   },
   "scripts": {
     "postinstall": "npx playwright install-deps chromium 2>/dev/null || true",
-    "build": "tsc && chmod +x dist/cli.js dist/mcp.js",
+    "build": "tsc && cp src/worker.js dist/worker.js && chmod +x dist/cli.js dist/mcp.js",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit",
     "test": "node --test dist/**/*.test.js"

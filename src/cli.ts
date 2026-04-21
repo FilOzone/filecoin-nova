@@ -14,6 +14,9 @@ import { listPieces, cleanPieces, toCidV1, type PieceInfo } from "./manage.js";
 import { relativeTime } from "./subgraph.js";
 import { ask, close } from "./prompt.js";
 import { c, fail, info, label, labelDim, promptLabel, banner, success, formatSize, link, jsonStringify, formatToken, isUrl } from "./ui.js";
+import { siteDeploy } from "./site.js";
+import { loadBundledWorker, DEFAULT_WORKER_NAME, DEFAULT_KV_TITLE, DEFAULT_COMPAT_DATE } from "./worker-asset.js";
+import { ensureKvNamespace, resolveAccount, uploadWorkerScript } from "./cloudflare.js";
 
 
 
@@ -1889,6 +1892,77 @@ async function runDemo(args: string[]) {
   }
 }
 
+async function runSite(args: string[]) {
+  const sub = args[1];
+  if (sub !== "deploy") {
+    fail(`Usage: nova site deploy [--site <dir>] [--dist <dir>]`);
+    process.exit(1);
+  }
+  const { values } = parseArgs({
+    args: args.slice(2),
+    allowPositionals: true,
+    options: {
+      site:       { type: "string", default: "." },
+      dist:       { type: "string" },
+      calibration:{ type: "boolean", default: false },
+      json:       { type: "boolean", default: false },
+    },
+  });
+  const config = resolveConfig(process.env);
+  const result = await siteDeploy({
+    sitePath: values.site as string,
+    distOverride: values.dist as string | undefined,
+    pinKey: config.pinKey,
+    walletAddress: config.walletAddress,
+    ensKey: process.env.NOVA_ENS_KEY,
+    rpcUrl: process.env.NOVA_RPC_URL,
+    cloudflareToken: process.env.CLOUDFLARE_API_TOKEN,
+    workerScriptName: process.env.NOVA_WORKER_NAME,
+    kvNamespaceId: process.env.NOVA_KV_NAMESPACE_ID,
+    workerUpload: (process.env.NOVA_WORKER_UPLOAD as "auto" | "skip" | "force" | undefined),
+    mainnet: !(values.calibration as boolean),
+  });
+  if (values.json) {
+    console.log(JSON.stringify(result));
+  }
+}
+
+async function runWorker(args: string[]) {
+  const sub = args[1];
+  if (sub !== "deploy") {
+    fail(`Usage: nova worker deploy`);
+    process.exit(1);
+  }
+  const token = process.env.CLOUDFLARE_API_TOKEN;
+  if (!token) {
+    fail("CLOUDFLARE_API_TOKEN env var required");
+    process.exit(1);
+  }
+  const { values } = parseArgs({
+    args: args.slice(2),
+    allowPositionals: true,
+    options: {
+      name:    { type: "string", default: DEFAULT_WORKER_NAME },
+      kv:      { type: "string", default: DEFAULT_KV_TITLE },
+      compat:  { type: "string", default: DEFAULT_COMPAT_DATE },
+      account: { type: "string" },
+    },
+  });
+  const scriptName = values.name as string;
+  const kvTitle = values.kv as string;
+  const compat = values.compat as string;
+  const accountId = (values.account as string) || (await resolveAccount(token)).accountId;
+  info(`Deploying Worker ${scriptName} to account ${accountId}`);
+  const kvId = await ensureKvNamespace(token, accountId, kvTitle);
+  info(`  KV: ${kvTitle} (${kvId})`);
+  const source = loadBundledWorker();
+  const deploymentId = await uploadWorkerScript(token, accountId, scriptName, source, {
+    compatibilityDate: compat,
+    kvBindings: [{ name: "CIDS", namespaceId: kvId }],
+  });
+  success(`  deployed: ${deploymentId || scriptName}`);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -1931,6 +2005,12 @@ async function main() {
       break;
     case "manage":
       await runManage(args);
+      break;
+    case "site":
+      await runSite(args);
+      break;
+    case "worker":
+      await runWorker(args);
       break;
     default:
       fail(`Unknown command: ${command}`);

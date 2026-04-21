@@ -1,0 +1,137 @@
+# Reusable workflow invoked by caller repos:
+#
+#   jobs:
+#     deploy:
+#       uses: FilOzone/filecoin-nova/.github/workflows/deploy-sites.yml@v0.7.0
+#       with:
+#         build_env: ${{ vars.SITE_BUILD_ENV }}   # optional multi-line
+#       secrets: inherit
+#
+# Caller contract (secrets; via `secrets: inherit`):
+#   NOVA_PIN_KEY            — always (FOC upload signing)
+#   NOVA_WALLET_ADDRESS     — always (FOC wallet address)
+#   NOVA_ENS_KEY            — only if any site has ens_name
+#   CLOUDFLARE_API_TOKEN    — only if any site has hostname
+#   NOVA_RPC_URL            — optional, Ethereum RPC override
+#
+# Optional inputs:
+#   build_env  — multi-line KEY=VALUE exported to both `npm run build`
+#                and `nova site deploy`. Use for per-repo extras
+#                (third-party API tokens, feature flags).
+
+name: Deploy sites
+
+on:
+  workflow_call:
+    inputs:
+      build_env:
+        type: string
+        required: false
+        default: ""
+        description: "Optional multi-line KEY=VALUE env for build + deploy"
+      nova_version:
+        type: string
+        required: false
+        default: "latest"
+        description: "filecoin-nova version to install globally"
+    secrets:
+      NOVA_PIN_KEY:        { required: false }
+      NOVA_WALLET_ADDRESS: { required: false }
+      NOVA_ENS_KEY:        { required: false }
+      CLOUDFLARE_API_TOKEN:{ required: false }
+      NOVA_RPC_URL:        { required: false }
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      sites: ${{ steps.pick.outputs.sites }}
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 2 }
+
+      - id: pick
+        name: Find sites with deploy.json
+        run: |
+          set -euo pipefail
+          # Find every deploy.json under the repo, excluding node_modules + dist.
+          mapfile -t paths < <(
+            find . -maxdepth 6 -name deploy.json \
+              -not -path '*/node_modules/*' \
+              -not -path '*/dist/*' \
+              -not -path '*/.git/*' \
+              2>/dev/null | sort -u
+          )
+          if [[ ${#paths[@]} -eq 0 ]]; then
+            echo "sites=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Emit JSON array of { name, path } pairs. name = dir basename, path = dir.
+          echo -n "sites=" >> "$GITHUB_OUTPUT"
+          jq -cn --args '[$ARGS.positional[] | capture("(?<path>.*)/deploy\\.json") | { name: (.path | split("/") | last), path }]' "${paths[@]}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: detect
+    if: needs.detect.outputs.sites != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        site: ${{ fromJson(needs.detect.outputs.sites) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with: { node-version: "22" }
+
+      - name: Install filecoin-nova
+        run: npm install -g filecoin-nova@${{ inputs.nova_version }}
+
+      - name: Export build_env
+        if: inputs.build_env != ''
+        run: |
+          echo "${{ inputs.build_env }}" >> "$GITHUB_ENV"
+
+      - name: Install site deps
+        working-directory: ${{ matrix.site.path }}
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          elif [[ -f package.json ]]; then
+            npm install
+          fi
+
+      - name: Check (if present)
+        working-directory: ${{ matrix.site.path }}
+        run: |
+          if [[ -f package.json ]] && jq -e '.scripts.check' package.json >/dev/null 2>&1; then
+            npm run check
+          fi
+
+      - name: Build (if present)
+        working-directory: ${{ matrix.site.path }}
+        env:
+          PROD_BUILD: "1"
+        run: |
+          if [[ -f package.json ]] && jq -e '.scripts.build' package.json >/dev/null 2>&1; then
+            npm run build
+          fi
+
+      - name: Deploy
+        working-directory: ${{ matrix.site.path }}
+        env:
+          NOVA_PIN_KEY:          ${{ secrets.NOVA_PIN_KEY }}
+          NOVA_WALLET_ADDRESS:   ${{ secrets.NOVA_WALLET_ADDRESS }}
+          NOVA_ENS_KEY:          ${{ secrets.NOVA_ENS_KEY }}
+          NOVA_RPC_URL:          ${{ secrets.NOVA_RPC_URL }}
+          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Optional overrides for repos that reuse an existing Worker + KV
+          # (e.g. migrating from a self-managed gateway). Unset in new repos:
+          # nova provisions `filecoin-nova-gateway` + a matching KV namespace.
+          NOVA_WORKER_NAME:      ${{ vars.NOVA_WORKER_NAME }}
+          NOVA_KV_NAMESPACE_ID:  ${{ vars.NOVA_KV_NAMESPACE_ID }}
+          NOVA_WORKER_UPLOAD:    ${{ vars.NOVA_WORKER_UPLOAD }}
+        run: nova site deploy --site .
