@@ -87,6 +87,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Serialize — parallel ENS updates from the same delegate wallet hit
+      # nonce collisions (both matrix runners read nonce N, both submit tx N,
+      # one wins and the other is dropped).
+      max-parallel: 1
       matrix:
         site: ${{ fromJson(needs.detect.outputs.sites) }}
     steps:
