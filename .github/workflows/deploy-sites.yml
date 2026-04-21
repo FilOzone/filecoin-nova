@@ -34,17 +34,8 @@ on:
         required: false
         default: "latest"
         description: "filecoin-nova version to install globally"
-    secrets:
-      NOVA_PIN_KEY:
-        required: false
-      NOVA_WALLET_ADDRESS:
-        required: false
-      NOVA_ENS_KEY:
-        required: false
-      CLOUDFLARE_API_TOKEN:
-        required: false
-      NOVA_RPC_URL:
-        required: false
+    # Callers must pass secrets via `secrets: inherit`. No explicit declaration
+    # block here — declaring named secrets restricts which ones pass through.
 
 concurrency:
   group: deploy-${{ github.ref }}
