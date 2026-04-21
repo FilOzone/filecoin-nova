@@ -34,6 +34,16 @@ on:
         required: false
         default: "latest"
         description: "filecoin-nova version to install globally"
+      site:
+        type: string
+        required: false
+        default: ""
+        description: "Restrict matrix to a single site (directory name). Overrides push-diff detection."
+      force_all:
+        type: boolean
+        required: false
+        default: false
+        description: "Deploy every site regardless of push diff (used for full-rollout dispatches)."
     # Named secrets. Same-org callers may use `secrets: inherit`;
     # cross-org callers must explicit-map each one in their workflow.
     secrets:
@@ -62,24 +72,67 @@ jobs:
         with: { fetch-depth: 2 }
 
       - id: pick
-        name: Find sites with deploy.json
+        name: Find sites to deploy
+        env:
+          SITE_INPUT: ${{ inputs.site }}
+          FORCE_ALL: ${{ inputs.force_all }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          # Find every deploy.json under the repo, excluding node_modules + dist.
-          mapfile -t paths < <(
+
+          # Every deploy.json under the repo.
+          mapfile -t all_paths < <(
             find . -maxdepth 6 -name deploy.json \
               -not -path '*/node_modules/*' \
               -not -path '*/dist/*' \
               -not -path '*/.git/*' \
-              2>/dev/null | sort -u
+              2>/dev/null | sed 's|^\./||' | sort -u
           )
-          if [[ ${#paths[@]} -eq 0 ]]; then
+          if [[ ${#all_paths[@]} -eq 0 ]]; then
             echo "sites=[]" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Emit JSON array of { name, path } pairs. name = dir basename, path = dir.
+
+          # Resolve candidate paths based on trigger:
+          #   1. inputs.site set          → just that one
+          #   2. inputs.force_all         → all
+          #   3. push event               → sites whose tree changed vs HEAD~1
+          #   4. otherwise (dispatch etc) → all
+          selected=()
+          if [[ -n "$SITE_INPUT" ]]; then
+            for p in "${all_paths[@]}"; do
+              dir="${p%/deploy.json}"
+              [[ "$(basename "$dir")" == "$SITE_INPUT" ]] && selected+=("$p")
+            done
+          elif [[ "$FORCE_ALL" == "true" ]]; then
+            selected=("${all_paths[@]}")
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            # Compute changed top-level site dirs.
+            mapfile -t changed < <(git diff --name-only HEAD~1 HEAD 2>/dev/null | awk -F/ '{print $1"/"$2}' | sort -u)
+            for p in "${all_paths[@]}"; do
+              dir="${p%/deploy.json}"
+              for c in "${changed[@]}"; do
+                [[ -z "$c" ]] && continue
+                if [[ "$dir" == "$c" || "$dir" == "$c/"* ]]; then
+                  selected+=("$p"); break
+                fi
+              done
+            done
+          else
+            selected=("${all_paths[@]}")
+          fi
+
+          if [[ ${#selected[@]} -eq 0 ]]; then
+            echo "No sites to deploy."
+            echo "sites=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Deploying ${#selected[@]} site(s):"
+          printf '  %s\n' "${selected[@]}"
+
           echo -n "sites=" >> "$GITHUB_OUTPUT"
-          jq -cn --args '[$ARGS.positional[] | capture("(?<path>.*)/deploy\\.json") | { name: (.path | split("/") | last), path }]' "${paths[@]}" >> "$GITHUB_OUTPUT"
+          jq -cn --args '[$ARGS.positional[] | capture("(?<path>.*)/deploy\\.json") | { name: (.path | split("/") | last), path }]' "${selected[@]}" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: detect
