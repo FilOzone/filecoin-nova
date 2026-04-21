@@ -2,7 +2,13 @@ import { ethers, TransactionResponse, TransactionReceipt, Network, FallbackProvi
 import { CID } from "multiformats/cid";
 import { c, gutterTop, gutterBottom } from "./ui.js";
 
-const TX_TIMEOUT_MS = 120_000; // 2 minutes
+// Mainnet ENS inclusion regularly takes 2–5 min. Override via
+// NOVA_TX_TIMEOUT_MS (milliseconds) for custom budgets.
+const TX_TIMEOUT_MS = (() => {
+  const v = process.env.NOVA_TX_TIMEOUT_MS;
+  const n = v ? Number(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 600_000; // default: 10 min
+})();
 const TX_POLL_MS = 5_000; // poll every 5s
 
 /**
