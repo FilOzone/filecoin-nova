@@ -85,6 +85,71 @@ A **CID** (Content Identifier) is a unique fingerprint for your content on IPFS.
 
 ---
 
+## Deploy a Static Site End-to-End
+
+Full decentralized hosting in one command: pin to Filecoin, host on your own Cloudflare domain via a bundled Worker, update DNSLink TXT, and set an ENS contenthash.
+
+**1. Drop a `deploy.json` next to your site:**
+
+```json
+{
+  "hostname": "mysite.example.com",
+  "cf_zone_id": "<your cloudflare zone id>",
+  "ens_name": "mysite.eth"
+}
+```
+
+Every field is optional:
+
+- Omit `hostname` + `cf_zone_id` → skip Cloudflare hosting.
+- Omit `ens_name` → skip ENS contenthash update.
+- Add `"dist": "site"` → deploy a pre-built directory (no build step).
+- Add `"apiProxy": { "/api": "https://backend.example.com" }` → Worker reverse-proxies those paths to your backend.
+
+**2. Deploy:**
+
+```bash
+export NOVA_PIN_KEY=0x...              # FOC signing key
+export NOVA_WALLET_ADDRESS=0x...       # FOC wallet
+export NOVA_ENS_KEY=0x...              # optional, only if ens_name set
+export CLOUDFLARE_API_TOKEN=...        # optional, only if hostname set
+
+nova site deploy --site ./
+```
+
+On first run Nova provisions a Cloudflare Worker (`filecoin-nova-gateway`) + KV namespace in your account, creates a proxied DNS record, and binds the route. On every subsequent run it's a KV write + DNSLink PATCH + ENS update — seconds. All steps are idempotent; re-runs are safe.
+
+**3. GitHub Actions (reusable workflow):**
+
+```yaml
+name: Deploy
+on:
+  push: { branches: [main], paths: ['sites/**'] }
+jobs:
+  deploy:
+    uses: FilOzone/filecoin-nova/.github/workflows/deploy-sites.yml@v0.7.7
+    secrets:
+      NOVA_PIN_KEY:         ${{ secrets.NOVA_PIN_KEY }}
+      NOVA_WALLET_ADDRESS:  ${{ secrets.NOVA_WALLET_ADDRESS }}
+      NOVA_ENS_KEY:         ${{ secrets.NOVA_ENS_KEY }}
+      NOVA_RPC_URL:         ${{ secrets.NOVA_RPC_URL }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+```
+
+The reusable workflow auto-detects sites (any directory containing a `deploy.json`), runs `npm ci` / optional `check` / `build`, then invokes `nova site deploy` for each. Matrix is serialised (`max-parallel: 1`) to avoid nonce collisions on the ENS delegate wallet.
+
+**Reuse an existing Worker + KV** (for teams migrating from a self-managed gateway): set these as GitHub Actions variables (not secrets):
+
+```
+NOVA_WORKER_NAME       = <your existing worker script name>
+NOVA_KV_NAMESPACE_ID   = <your existing KV namespace id>
+NOVA_WORKER_UPLOAD     = skip
+```
+
+Nova will write to your existing KV and leave the Worker script alone.
+
+---
+
 ## AI Editor Integration (MCP)
 
 Nova includes an MCP server so your AI editor can deploy and manage sites through conversation.

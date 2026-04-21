@@ -93,6 +93,8 @@ const HELP = `
     ${c.cyan}nova deploy${c.reset} [path] [options]        Deploy a directory or archive
     ${c.cyan}nova ens${c.reset} [name]                      Check ENS contenthash + pin status
     ${c.cyan}nova ens${c.reset} <cid> --ens <name>         Point ENS domain to an IPFS CID
+    ${c.cyan}nova site deploy${c.reset} --site <dir>       Deploy a static site (FOC + CF Worker + DNSLink + ENS)
+    ${c.cyan}nova worker deploy${c.reset} [options]        Deploy the bundled Cloudflare gateway Worker
     ${c.cyan}nova info${c.reset} <cid>                     Show details for a specific deployment
     ${c.cyan}nova wallet${c.reset}                          Show wallet balance and deposit status
     ${c.cyan}nova download${c.reset} <cid> [dir]              Download content from IPFS
@@ -105,12 +107,17 @@ const HELP = `
     No private keys needed. Nova opens your browser for wallet signing via MetaMask.
     For CI/automation, set env vars instead:
 
-    ${c.cyan}NOVA_PIN_KEY${c.reset}         Filecoin wallet private key (for write operations)
-    ${c.cyan}NOVA_WALLET_ADDRESS${c.reset}  Wallet address (for read-only operations)
-    ${c.cyan}NOVA_ENS_KEY${c.reset}         Ethereum wallet key (CI fallback for ENS)
-    ${c.cyan}NOVA_ENS_NAME${c.reset}        Default ENS domain
-    ${c.cyan}NOVA_RPC_URL${c.reset}         Ethereum RPC URL (override default RPCs)
-    ${c.cyan}NOVA_PROVIDER_ID${c.reset}     Storage provider ID
+    ${c.cyan}NOVA_PIN_KEY${c.reset}           Filecoin wallet private key (for write operations)
+    ${c.cyan}NOVA_WALLET_ADDRESS${c.reset}    Wallet address (for read-only operations)
+    ${c.cyan}NOVA_ENS_KEY${c.reset}           Ethereum wallet key (CI fallback for ENS)
+    ${c.cyan}NOVA_ENS_NAME${c.reset}          Default ENS domain
+    ${c.cyan}NOVA_RPC_URL${c.reset}           Ethereum RPC URL (override default RPCs)
+    ${c.cyan}NOVA_PROVIDER_ID${c.reset}       Storage provider ID
+    ${c.cyan}NOVA_TX_TIMEOUT_MS${c.reset}     ENS tx confirmation budget (default 600000)
+    ${c.cyan}CLOUDFLARE_API_TOKEN${c.reset}   CF token (site deploy + worker deploy)
+    ${c.cyan}NOVA_WORKER_NAME${c.reset}       Override bundled Worker script name
+    ${c.cyan}NOVA_KV_NAMESPACE_ID${c.reset}   Reuse an existing KV namespace (skip create)
+    ${c.cyan}NOVA_WORKER_UPLOAD${c.reset}     Set to "skip" to reuse an existing Worker script
 
   ${c.bold}Options${c.reset}
 
@@ -137,6 +144,8 @@ const HELP = `
     ${c.dim}$${c.reset} nova info bafybei...                  ${c.dim}# Show details for a deployment${c.reset}
     ${c.dim}$${c.reset} nova ens mysite.eth                  ${c.dim}# Check contenthash + pin status${c.reset}
     ${c.dim}$${c.reset} nova ens bafybei... --ens mysite.eth ${c.dim}# Update ENS to point to CID${c.reset}
+    ${c.dim}$${c.reset} nova site deploy --site ./           ${c.dim}# Full static-site deploy via deploy.json${c.reset}
+    ${c.dim}$${c.reset} nova worker deploy                    ${c.dim}# Ship the bundled gateway Worker${c.reset}
     ${c.dim}$${c.reset} nova manage
     ${c.dim}$${c.reset} nova manage clean --really-do-it
 `;
