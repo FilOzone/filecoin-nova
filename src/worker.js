@@ -1,7 +1,7 @@
 const GATEWAYS = [
   { name: 'dweb.link', url: (cid, path) => `https://${cid}.ipfs.dweb.link${path}` },
+  { name: 'w3s.link', url: (cid, path) => `https://${cid}.ipfs.w3s.link${path}` },
   { name: 'ipfs.io', url: (cid, path) => `https://ipfs.io/ipfs/${cid}${path}` },
-  { name: '4everland.io', url: (cid, path) => `https://${cid}.ipfs.4everland.io${path}` },
 ]
 
 const PER_GATEWAY_TIMEOUT_MS = 15000

@@ -133,6 +133,10 @@ Test fixes on the deployed clone via Playwright route interception before editin
 - Locale detection: 3-tier approach (hreflang tags → og:locale meta → JS bundle scan for ISO 639-1 arrays)
 - Next.js App Router does NOT expose `__NEXT_DATA__` with locale arrays -- must scan compiled JS bundles
 - IPFS has no SPA fallback -- every URL path needs a real HTML file, so all locale roots must be crawled
+- Inline `<style>` blocks are scanned for url() references (fonts, background-images) -- both during DOM scan and post-crawl CSS pass
+- Inline `style` attributes are parsed for url() references (background-image, etc.) -- not treated as a single URL
+- Safari srcset dedup: responsive entries (image.jpg?width=300, ?width=600) are deduped by URL without query params before fetching
+- Don't propose changes to clone.ts without reading the existing code -- it already has extensive asset discovery (MutationObserver, Safari UA check, DOM scanner, CSS scanner, deferred fetch)
 
 ## Roadmap
 
@@ -150,6 +154,7 @@ Test fixes on the deployed clone via Playwright route interception before editin
 ### TODO
 - **24-hour demo cleanup** - Cron to remove old calibnet demo pieces via subgraph timestamps
 - **Notifications** - Slack webhook, email, status.json after deploy
+- **Proxy fallback for blocked sites** - If stealth + challenge wait fails, auto-retry through VPN proxy. `NOVA_PROXY=socks5://user:pass@host:port` env var, Playwright `proxy: { server }` on browser launch. PIA (Private Internet Access) is the best SOCKS5 option -- Amsterdam server, multi-hop, active fleet. First attempt direct, fallback to proxy on unresolved challenge.
 - **Content on FOC datasets** - Store source content on Filecoin (not just build output)
 
 ## Publishing
@@ -159,6 +164,14 @@ Test fixes on the deployed clone via Playwright route interception before editin
 - Publish: `npm publish` (token already configured)
 - Bump version in package.json before publishing (mcp.ts reads version from package.json automatically)
 - Always bump after pushing changes - don't wait for user to ask
+- After npm publish, ALWAYS update focify-me: `ssh 77.42.75.71 'cd ~/focify-me && npm install filecoin-nova@latest'` then `pm2 restart focify-me`
+
+## GitHub Action
+- Composite action at `.github/action/action.yml` -- wraps `nova deploy --json`
+- Test workflow at `.github/workflows/test-action.yml` -- deploys test page to calibnet on push
+- All inputs routed through env vars (INPUT_*) to prevent script injection
+- Calibnet without NOVA_PIN_KEY falls back to `nova demo` (zero-config PR previews)
+- PR comment uses `<!-- nova-deploy-comment -->` marker to update in place
 
 ## Development
 - Language: TypeScript
