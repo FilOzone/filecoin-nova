@@ -13,11 +13,18 @@
 #   NOVA_ENS_KEY            — only if any site has ens_name
 #   CLOUDFLARE_API_TOKEN    — only if any site has hostname
 #   NOVA_RPC_URL            — optional, Ethereum RPC override
+#   BUILD_SECRETS           — optional, multi-line KEY=VALUE secrets exported to
+#                             build + deploy. For sensitive per-repo build-time
+#                             values (database IDs, third-party tokens). Use this
+#                             instead of `with: build_env:` for secrets — GitHub
+#                             rejects `${{ secrets.* }}` references inside the
+#                             reusable workflow's `with:` block.
 #
 # Optional inputs:
 #   build_env  — multi-line KEY=VALUE exported to both `npm run build`
 #                and `nova site deploy`. Use for per-repo extras
-#                (third-party API tokens, feature flags).
+#                (third-party API tokens, feature flags). NON-SECRET values
+#                only — for secrets, use the `BUILD_SECRETS` secret slot.
 
 name: Deploy sites
 
@@ -56,6 +63,10 @@ on:
       CLOUDFLARE_API_TOKEN:
         required: false
       NOVA_RPC_URL:
+        required: false
+      # Multi-line KEY=VALUE — exported to $GITHUB_ENV before build + deploy.
+      # Use for sensitive per-repo build-time vars (DB ids, third-party tokens).
+      BUILD_SECRETS:
         required: false
 
 concurrency:
@@ -158,6 +169,14 @@ jobs:
         if: inputs.build_env != ''
         run: |
           echo "${{ inputs.build_env }}" >> "$GITHUB_ENV"
+
+      - name: Export BUILD_SECRETS
+        env:
+          BUILD_SECRETS: ${{ secrets.BUILD_SECRETS }}
+        run: |
+          if [[ -n "$BUILD_SECRETS" ]]; then
+            printf '%s\n' "$BUILD_SECRETS" >> "$GITHUB_ENV"
+          fi
 
       - name: Install site deps
         working-directory: ${{ matrix.site.path }}
