@@ -53,14 +53,8 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Build the `subname` portion of a deploy/subname tool result.
- *
- * One path: sign the claim with the configured key (disk pin key or browser
- * session key) and assert the owner -- the real wallet when we have one, else
- * the key's own address. The Worker maps the signer to the true owner. A name
- * owned by someone else is reported as `skipped`, never overwritten. An update
- * the Worker can't yet authorize (transient RPC) is `retry`. Best-effort -- any
- * other error is `error`, never thrown.
+ * Build the `subname` portion of a deploy/subname tool result: issue once via
+ * `issueSubnameOnce` and map the outcome to the tool's JSON shape. Never throws.
  */
 async function buildSubnameOutput(
   config: ReturnType<typeof resolveConfig>,

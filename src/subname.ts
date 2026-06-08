@@ -1,23 +1,8 @@
 /**
- * Free, gasless ENS subname issuance -- client side.
- *
- * This module is a PURE thin client over the Nova-operated subname Worker.
- * It does NOT import the Namespace SDK and holds NO secrets: the master
- * Namespace API key lives only in the Worker (see workers/subname/). All this
- * module knows is the Worker URL and the claim-message format.
- *
- * Ownership model (one rule, no separate page):
- *   The CLI signs the claim with whatever key it holds and ASSERTS an owner:
- *     - disk pin key (the wallet)      -> sign with it, owner = its own address
- *     - browser session key (delegate) -> sign with it, owner = the real wallet
- *       (the CLI already learned the real wallet from the on-chain Login event)
- *   The Worker recovers the signer and:
- *     - on CREATE  -> records owner = the asserted owner (no on-chain read;
- *       a wrong owner only self-griefs, so this is safe and RPC-free)
- *     - on UPDATE  -> requires the signer to control the stored owner: either
- *       signer == owner directly (disk key), or signer resolves to owner via
- *       the SessionKeyRegistry (browser session key). RPC failure there is
- *       retryable -- the name keeps its old CID, the deploy is never lost.
+ * Free, gasless ENS subname issuance -- client side. A pure thin client over the
+ * Nova subname Worker: no Namespace SDK, no secrets (the master key lives only in
+ * the Worker). The CLI signs each claim and asserts an owner; the Worker records
+ * it on create and enforces it on update.
  */
 
 import { basename } from "node:path";
@@ -64,10 +49,8 @@ export class SubnameTakenError extends Error {
 }
 
 /**
- * Update couldn't be authorized because the Worker couldn't confirm, right now,
- * that the signer controls the name's owner (e.g. a transient Filecoin RPC
- * failure resolving the session key -> wallet). Retryable; the existing name is
- * untouched and the new content is still live at the gateway.
+ * The Worker couldn't confirm right now that the signer controls the name's owner
+ * (e.g. a transient Filecoin RPC failure). Retryable; the existing name is untouched.
  */
 export class OwnerUnverifiableError extends Error {
   constructor(public readonly fullName: string) {
@@ -76,11 +59,7 @@ export class OwnerUnverifiableError extends Error {
   }
 }
 
-/**
- * The exact string that gets personal_sign'd. Single source of truth for the
- * claim -- it MUST stay byte-identical here and in the Worker, or recovered
- * signers won't match.
- */
+/** The exact string that gets personal_sign'd. MUST stay byte-identical in the Worker. */
 export function buildClaimMessage(claim: SubnameClaim): string {
   return [
     "Nova subname claim",
@@ -92,11 +71,7 @@ export function buildClaimMessage(claim: SubnameClaim): string {
   ].join("\n");
 }
 
-/**
- * Convenience-only label normalization. The Worker re-validates
- * authoritatively (validateSubname + regex), so this is just to give the
- * user a sensible default and early feedback.
- */
+/** Convenience-only label normalization (the Worker re-validates authoritatively). */
 export function normalizeLabel(input: string): string {
   return input
     .toLowerCase()
@@ -112,11 +87,7 @@ export function suggestLabel(dir: string): string {
   return normalizeLabel(basename(dir.replace(/[/\\]+$/, "")));
 }
 
-/**
- * The label to use for a deploy: the caller's requested label (normalized) when
- * given, else one derived from the directory. Single source of truth for the
- * "what should this name be" decision across the CLI, MCP, and demo paths.
- */
+/** The deploy's label: the requested one (normalized), else derived from the directory. */
 export function deriveLabel(requestedLabel: string | undefined, directory: string): string {
   return requestedLabel ? normalizeLabel(requestedLabel) : suggestLabel(directory);
 }
@@ -141,10 +112,7 @@ export function fullNameOf(label: string, parent: string): string {
   return `${label}.${parent}`;
 }
 
-/**
- * Read current status of a subname (exists / available / owner / contenthash).
- * Backs the CLI name loop.
- */
+/** Read a subname's current status (exists / available / owner / contenthash). */
 export async function checkAvailability(
   workerUrl: string,
   fullName: string,
@@ -158,12 +126,8 @@ export async function checkAvailability(
 }
 
 /**
- * Issue (create or update) a subname.
- *
- * Signs the claim with `signingKey` (the disk pin key, or the browser session
- * key) and asserts `owner` (the wallet the deployer controls). `chain` tells the
- * Worker which SessionKeyRegistry to use if it must resolve a session key to its
- * wallet during an ownership-verified update.
+ * Issue (create or update) a subname: sign the claim with `signingKey` and assert
+ * `owner`. `chain` picks the SessionKeyRegistry for ownership-verified updates.
  */
 export async function issueSubname(opts: {
   workerUrl: string;
@@ -212,12 +176,7 @@ export async function issueSubname(opts: {
   };
 }
 
-/**
- * Outcome of one headless issuance attempt -- the shared decision logic behind
- * both the MCP tool and the CLI's non-interactive path. The availability check,
- * ownership gate, and error classification all live here; callers only switch on
- * `kind` to present the result (MCP -> JSON, CLI -> console).
- */
+/** Result of one headless issuance attempt; callers switch on `kind` to present it. */
 export type SubnameOutcome =
   | { kind: "issued"; result: IssueResult }
   | { kind: "invalid-label"; label: string; fullName: string }
@@ -228,12 +187,8 @@ export type SubnameOutcome =
   | { kind: "error"; fullName: string; message: string };
 
 /**
- * Issue a gated subname once, non-interactively: validate the label, confirm a
- * signing key, gate on availability/ownership, then create-or-update. Never
- * throws -- every failure becomes a SubnameOutcome the caller can render.
- *
- * `raced` on a "taken" outcome distinguishes a name already taken at the
- * availability check (false) from one taken between check and write (true, 409).
+ * Issue a gated subname once, non-interactively. Never throws -- every failure
+ * becomes a SubnameOutcome. `raced` marks a name taken between check and write (409).
  */
 export async function issueSubnameOnce(opts: {
   workerUrl: string;
@@ -280,10 +235,8 @@ export async function issueSubnameOnce(opts: {
 }
 
 /**
- * Issue a demo subname (no owner, no signature) under the demo parent, using the
- * user's chosen label (e.g. happy -> happy.demo.fcnova.eth). Demo names are
- * create-only: an existing name is never overwritten, so this throws
- * SubnameTakenError on a collision (the caller picks another name or skips).
+ * Issue a demo subname (no owner/signature) under the demo parent. Create-only:
+ * throws SubnameTakenError on a collision (an existing name is never overwritten).
  */
 export async function issueDemoSubname(
   workerUrl: string,

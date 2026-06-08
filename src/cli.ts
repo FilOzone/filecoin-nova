@@ -102,17 +102,8 @@ async function pollForEnsUpdate(
 type IssuedName = { fullName: string; url: string; owner?: string; status?: "created" | "updated" };
 
 /**
- * Interactive name picker shared by deploy and demo.
- *
- * Announces the free name, then loops: the user chooses a name and is told its
- * exact state -- available (claim it), already yours (offer to repoint), taken by
- * someone else (pick another), or, for demo (ungated, `myOwner` undefined),
- * already taken (create-only, so pick another). Ends only on a successful issue
- * or an explicit skip. Best-effort: a Worker/RPC error is reported and resolves
- * to null (the CID is already done), never thrown.
- *
- * The non-interactive path doesn't live here -- it's the headless
- * `issueSubnameOnce` core, rendered by `runSubnameStep`.
+ * Interactive name picker shared by deploy and demo. Loops until the user claims a
+ * name or skips. `myOwner` undefined => ungated demo name. Best-effort, never throws.
  */
 async function pickSubnameInteractive(opts: {
   workerUrl: string;
@@ -248,11 +239,8 @@ function renderSubnameOutcome(outcome: SubnameOutcome, result: SubnameResult): v
 }
 
 /**
- * Post-deploy: claim a free, gasless subname under the Nova parent. Signs with
- * whatever key the CLI holds and asserts the owner (real wallet when known, else
- * the pin key's address). Interactive runs delegate the name UX to
- * `pickSubnameInteractive`; non-interactive runs issue once via `issueSubnameOnce`
- * and render the outcome. Best-effort: never throws past the CID.
+ * Post-deploy: claim a free, gasless subname. Interactive runs use
+ * `pickSubnameInteractive`; non-interactive runs issue once via `issueSubnameOnce`.
  */
 async function runSubnameStep(
   config: ReturnType<typeof resolveConfig>,

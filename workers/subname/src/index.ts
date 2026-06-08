@@ -1,20 +1,11 @@
 /**
- * Nova subname issuance Worker.
+ * Nova subname issuance Worker -- sole holder of the master Namespace API key
+ * (clients only fetch() it; they never see the key or import the SDK).
  *
- * Sole holder of the master Namespace API key. Clients only ever fetch() this
- * Worker -- they never see the key and never import the Namespace SDK.
- *
- * Ownership invariant: every write carries a fresh signature over
- * {label,cid,expiry}; we recover the signer and, on create, set owner = signer;
- * on update, require owner === signer. Namespace persists owner, so no DB.
- *
- * One parent, one key. The Namespace key for SUBNAME_PARENT (e.g. fcnova.eth)
- * can issue names at any depth under it. Real names are single-label
- * (happy -> happy.fcnova.eth, gated by signature). Demo names nest one level
- * under a reserved DEMO_LABEL segment (happy -> happy.demo.fcnova.eth, ungated,
- * no owner, but CREATE-ONLY: first-come and never overwritten, so a shared demo
- * URL can't be hijacked). /issue's LABEL_RE forbids dots, so gated names can
- * never land in the *.demo.* namespace -- the two are disjoint by construction.
+ * One key issues names under SUBNAME_PARENT. Gated names are single-label
+ * (happy.fcnova.eth, signature-checked). Demo names nest under a reserved
+ * DEMO_LABEL (happy.demo.fcnova.eth) -- ungated but create-only, never overwritten.
+ * LABEL_RE forbids dots, so the gated and demo namespaces stay disjoint.
  */
 
 import { createOffchainClient, validateSubname } from "@thenamespace/offchain-manager";
@@ -82,10 +73,9 @@ const LOGIN_TOPIC = keccak256(toBytes("Login(address,address,uint256,uint256)"))
 class RpcError extends Error {}
 
 /**
- * Resolve the root wallet that authorized `signer` on the SessionKeyRegistry,
- * by scanning recent Login events (filtered by the indexed signer topic).
- * Returns null if no registration is found; throws RpcError on transient RPC
- * failure so the caller can return a retryable 503 instead of a wrong verdict.
+ * Resolve the root wallet that authorized `signer` on the SessionKeyRegistry
+ * (scans recent Login events). Returns null if none; throws RpcError on transient
+ * RPC failure so the caller returns a retryable 503, never a wrong verdict.
  */
 async function resolveRoot(signer: string, chain: string, env: Env): Promise<string | null> {
   const registry = SESSION_KEY_REGISTRY[chain];
