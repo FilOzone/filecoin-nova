@@ -90,9 +90,9 @@ export async function demoDeploy(
   let subnameUrl: string | undefined;
   if (opts?.autoSubname !== false) {
     try {
-      const { issueDemoSubname, normalizeLabel, suggestLabel } = await import("./subname.js");
+      const { issueDemoSubname, deriveLabel } = await import("./subname.js");
       const workerUrl = process.env.NOVA_SUBNAME_WORKER_URL || DEFAULT_SUBNAME_WORKER_URL;
-      const label = opts?.subname ? normalizeLabel(opts.subname) : suggestLabel(result.directory);
+      const label = deriveLabel(opts?.subname, result.directory);
       if (workerUrl && label) {
         const issued = await issueDemoSubname(workerUrl, result.cid, label);
         subname = issued.fullName;

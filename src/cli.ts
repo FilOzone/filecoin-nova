@@ -14,12 +14,16 @@ import {
   checkAvailability,
   issueSubname,
   issueDemoSubname,
+  issueSubnameOnce,
   ownerForKey,
   normalizeLabel,
-  suggestLabel,
+  deriveLabel,
+  fullNameOf,
+  isOwnedBy,
   isValidLabel,
   SubnameTakenError,
   OwnerUnverifiableError,
+  type SubnameOutcome,
 } from "./subname.js";
 import { listPieces, cleanPieces, toCidV1, type PieceInfo } from "./manage.js";
 import { relativeTime } from "./subgraph.js";
@@ -98,29 +102,26 @@ async function pollForEnsUpdate(
 type IssuedName = { fullName: string; url: string; owner?: string; status?: "created" | "updated" };
 
 /**
- * Interactive (or one-shot) name picker shared by deploy and demo.
+ * Interactive name picker shared by deploy and demo.
  *
- * Interactive: an intro line, then a loop that lets the user choose a name and
- * tells them exactly what each name's state is -- available (claim it), already
- * yours (offer to repoint), taken by someone else (pick another), or, for demo
- * (ungated, `myOwner` undefined), already exists (offer to overwrite). The loop
- * only ends on a successful issue or an explicit skip.
+ * Announces the free name, then loops: the user chooses a name and is told its
+ * exact state -- available (claim it), already yours (offer to repoint), taken by
+ * someone else (pick another), or, for demo (ungated, `myOwner` undefined),
+ * already taken (create-only, so pick another). Ends only on a successful issue
+ * or an explicit skip. Best-effort: a Worker/RPC error is reported and resolves
+ * to null (the CID is already done), never thrown.
  *
- * Non-interactive (`--json` / CI / piped): issue the default label once and skip
- * silently on an invalid label or a name owned by someone else -- never prompts.
- *
- * Best-effort: a Worker/RPC error is reported and resolves to null (the CID is
- * already done), never thrown.
+ * The non-interactive path doesn't live here -- it's the headless
+ * `issueSubnameOnce` core, rendered by `runSubnameStep`.
  */
-async function chooseAndIssueSubname(opts: {
+async function pickSubnameInteractive(opts: {
   workerUrl: string;
   parent: string;
   defaultLabel: string;
   myOwner?: string; // undefined => ungated demo name
-  interactive: boolean;
   issue: (label: string) => Promise<IssuedName>;
 }): Promise<IssuedName | null> {
-  const { workerUrl, parent, myOwner, interactive, issue } = opts;
+  const { workerUrl, parent, myOwner, issue } = opts;
   const ungated = !myOwner;
   const noun = ungated ? "Demo name" : "Name";
 
@@ -145,31 +146,6 @@ async function chooseAndIssueSubname(opts: {
     }
   };
 
-  // --- Non-interactive: one shot, skip silently on collision/invalid ---
-  if (!interactive) {
-    const label = opts.defaultLabel;
-    if (!isValidLabel(label)) {
-      info(`Skipping name: "${label}" is not a valid label.`);
-      return null;
-    }
-    if (!ungated) {
-      try {
-        const status = await checkAvailability(workerUrl, `${label}.${parent}`);
-        const ownedByMe = !!status.owner && status.owner.toLowerCase() === myOwner!.toLowerCase();
-        if (status.exists && !ownedByMe) {
-          info(`Name ${label}.${parent} is taken -- skipping (use --subname to choose another).`);
-          return null;
-        }
-      } catch (err: any) {
-        info(`Free name skipped: ${err.message}`);
-        return null;
-      }
-    }
-    const r = await tryIssue(label);
-    return r === "retry-name" ? null : r;
-  }
-
-  // --- Interactive: announce the free name, then ask + loop ---
   console.log("");
   info(
     ungated
@@ -194,7 +170,7 @@ async function chooseAndIssueSubname(opts: {
       continue;
     }
 
-    const fullName = `${label}.${parent}`;
+    const fullName = fullNameOf(label, parent);
     let status;
     try {
       status = await checkAvailability(workerUrl, fullName);
@@ -209,15 +185,12 @@ async function chooseAndIssueSubname(opts: {
         info(`${fullName} is taken -- choose another.`);
         continue;
       }
-    } else {
-      const ownedByMe = !!status.owner && status.owner.toLowerCase() === myOwner!.toLowerCase();
-      if (status.exists && ownedByMe) {
-        const yn = (await ask(promptLabel(`You already own ${fullName}. Point it at this deploy? [Y/n]`))).trim();
-        if (/^n/i.test(yn)) continue;
-      } else if (status.exists && !ownedByMe) {
-        info(`${fullName} is taken by someone else.`);
-        continue;
-      }
+    } else if (status.exists && isOwnedBy(status, myOwner!)) {
+      const yn = (await ask(promptLabel(`You already own ${fullName}. Point it at this deploy? [Y/n]`))).trim();
+      if (/^n/i.test(yn)) continue;
+    } else if (status.exists) {
+      info(`${fullName} is taken by someone else.`);
+      continue;
     }
 
     const r = await tryIssue(label);
@@ -226,21 +199,64 @@ async function chooseAndIssueSubname(opts: {
   }
 }
 
+type SubnameResult = {
+  cid: string;
+  directory: string;
+  subname?: string;
+  subnameUrl?: string;
+  subnameOwner?: string;
+};
+
+/** Record a successful issue onto the deploy result. */
+function applyIssuedName(result: SubnameResult, issued: IssuedName, fallbackOwner: string): void {
+  result.subname = issued.fullName;
+  result.subnameUrl = issued.url;
+  result.subnameOwner = issued.owner ?? fallbackOwner;
+}
+
+/** Render a headless (`issueSubnameOnce`) outcome to the console, post-deploy. */
+function renderSubnameOutcome(outcome: SubnameOutcome, result: SubnameResult): void {
+  switch (outcome.kind) {
+    case "issued":
+      console.log("");
+      success(`Name ready: ${c.bold}${outcome.result.url}${c.reset}`);
+      applyIssuedName(result, outcome.result, outcome.result.owner);
+      return;
+    case "invalid-label":
+      info(`Skipping name: "${outcome.label}" is not a valid label.`);
+      return;
+    case "no-key":
+      return;
+    case "taken":
+      info(
+        outcome.raced
+          ? `${outcome.fullName} was just taken.`
+          : `Name ${outcome.fullName} is taken -- skipping (use --subname to choose another).`,
+      );
+      return;
+    case "check-failed":
+      info(`Free name skipped: ${outcome.message}`);
+      return;
+    case "retry":
+      info(outcome.message);
+      info(`${c.dim}Your site is live at the gateway; re-run to set the name once ownership confirms.${c.reset}`);
+      return;
+    case "error":
+      info(`Name skipped: ${outcome.message}`);
+      return;
+  }
+}
+
 /**
- * Post-deploy: claim a free, gasless subname under the Nova parent.
- * Signs with whatever key the CLI holds and asserts the owner (real wallet when
- * known, else the pin key's address). Delegates the name UX to
- * chooseAndIssueSubname. Best-effort: never throws past the CID.
+ * Post-deploy: claim a free, gasless subname under the Nova parent. Signs with
+ * whatever key the CLI holds and asserts the owner (real wallet when known, else
+ * the pin key's address). Interactive runs delegate the name UX to
+ * `pickSubnameInteractive`; non-interactive runs issue once via `issueSubnameOnce`
+ * and render the outcome. Best-effort: never throws past the CID.
  */
 async function runSubnameStep(
   config: ReturnType<typeof resolveConfig>,
-  result: {
-    cid: string;
-    directory: string;
-    subname?: string;
-    subnameUrl?: string;
-    subnameOwner?: string;
-  },
+  result: SubnameResult,
   opts: { requestedLabel?: string; interactive: boolean; chain: "mainnet" | "calibration" },
 ): Promise<void> {
   const parent = config.subnameParent;
@@ -249,25 +265,31 @@ async function runSubnameStep(
   if (!signingKey) return; // nothing to sign with -- skip silently
 
   const myOwner = config.walletAddress || ownerForKey(signingKey);
-  const defaultLabel = opts.requestedLabel
-    ? normalizeLabel(opts.requestedLabel)
-    : suggestLabel(result.directory);
+  const defaultLabel = deriveLabel(opts.requestedLabel, result.directory);
 
-  const issued = await chooseAndIssueSubname({
+  if (!opts.interactive) {
+    const outcome = await issueSubnameOnce({
+      workerUrl,
+      signingKey,
+      walletAddress: config.walletAddress,
+      label: defaultLabel,
+      parent,
+      cid: result.cid,
+      chain: opts.chain,
+    });
+    renderSubnameOutcome(outcome, result);
+    return;
+  }
+
+  const issued = await pickSubnameInteractive({
     workerUrl,
     parent,
     defaultLabel,
     myOwner,
-    interactive: opts.interactive,
     issue: (label) =>
       issueSubname({ workerUrl, signingKey, owner: myOwner, label, parent, cid: result.cid, chain: opts.chain }),
   });
-
-  if (issued) {
-    result.subname = issued.fullName;
-    result.subnameUrl = issued.url;
-    result.subnameOwner = issued.owner ?? myOwner;
-  }
+  if (issued) applyIssuedName(result, issued, myOwner);
 }
 
 const HELP = `
@@ -2093,12 +2115,11 @@ async function runDemo(args: string[]) {
   } else {
     // Free demo name -- interactive picker, or print the auto-issued one.
     if (interactive && hasSubnameService(config)) {
-      const issued = await chooseAndIssueSubname({
+      const issued = await pickSubnameInteractive({
         workerUrl: config.subnameWorkerUrl,
         parent: `demo.${config.subnameParent}`,
-        defaultLabel: values.subname ? normalizeLabel(values.subname) : suggestLabel(result.directory),
+        defaultLabel: deriveLabel(values.subname, result.directory),
         myOwner: undefined, // ungated demo
-        interactive: true,
         issue: (label) => issueDemoSubname(config.subnameWorkerUrl, result.cid, label),
       });
       if (issued) {

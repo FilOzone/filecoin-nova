@@ -112,9 +112,23 @@ export function suggestLabel(dir: string): string {
   return normalizeLabel(basename(dir.replace(/[/\\]+$/, "")));
 }
 
+/**
+ * The label to use for a deploy: the caller's requested label (normalized) when
+ * given, else one derived from the directory. Single source of truth for the
+ * "what should this name be" decision across the CLI, MCP, and demo paths.
+ */
+export function deriveLabel(requestedLabel: string | undefined, directory: string): string {
+  return requestedLabel ? normalizeLabel(requestedLabel) : suggestLabel(directory);
+}
+
 /** A label is plausibly valid client-side (Worker is authoritative). */
 export function isValidLabel(label: string): boolean {
   return /^[a-z0-9-]{1,63}$/.test(label);
+}
+
+/** Does `owner` control this name? Case-insensitive; false if the name has no owner. */
+export function isOwnedBy(status: SubnameStatus, owner: string): boolean {
+  return !!status.owner && status.owner.toLowerCase() === owner.toLowerCase();
 }
 
 /** The address that owns (or would own) a subname when signed with this key. */
@@ -122,7 +136,8 @@ export function ownerForKey(key: string): string {
   return privateKeyToAccount(ensureHexKey(key)).address;
 }
 
-function fullNameOf(label: string, parent: string): string {
+/** The full ENS name for a label under a parent (e.g. "happy" + "fcnova.eth"). */
+export function fullNameOf(label: string, parent: string): string {
   return `${label}.${parent}`;
 }
 
@@ -195,6 +210,73 @@ export async function issueSubname(opts: {
     url: (body.url as string) || `https://${fullName}.limo`,
     owner: (body.owner as string) || opts.owner,
   };
+}
+
+/**
+ * Outcome of one headless issuance attempt -- the shared decision logic behind
+ * both the MCP tool and the CLI's non-interactive path. The availability check,
+ * ownership gate, and error classification all live here; callers only switch on
+ * `kind` to present the result (MCP -> JSON, CLI -> console).
+ */
+export type SubnameOutcome =
+  | { kind: "issued"; result: IssueResult }
+  | { kind: "invalid-label"; label: string; fullName: string }
+  | { kind: "no-key"; fullName: string }
+  | { kind: "taken"; fullName: string; owner?: string; raced: boolean }
+  | { kind: "check-failed"; fullName: string; message: string }
+  | { kind: "retry"; fullName: string; message: string }
+  | { kind: "error"; fullName: string; message: string };
+
+/**
+ * Issue a gated subname once, non-interactively: validate the label, confirm a
+ * signing key, gate on availability/ownership, then create-or-update. Never
+ * throws -- every failure becomes a SubnameOutcome the caller can render.
+ *
+ * `raced` on a "taken" outcome distinguishes a name already taken at the
+ * availability check (false) from one taken between check and write (true, 409).
+ */
+export async function issueSubnameOnce(opts: {
+  workerUrl: string;
+  signingKey?: string;
+  walletAddress?: string;
+  label: string;
+  parent: string;
+  cid: string;
+  chain: SubnameChain;
+}): Promise<SubnameOutcome> {
+  const fullName = fullNameOf(opts.label, opts.parent);
+
+  if (!isValidLabel(opts.label)) return { kind: "invalid-label", label: opts.label, fullName };
+  if (!opts.signingKey) return { kind: "no-key", fullName };
+
+  const owner = opts.walletAddress || ownerForKey(opts.signingKey);
+
+  let status: SubnameStatus;
+  try {
+    status = await checkAvailability(opts.workerUrl, fullName);
+  } catch (err: any) {
+    return { kind: "check-failed", fullName, message: err.message };
+  }
+  if (status.exists && !isOwnedBy(status, owner)) {
+    return { kind: "taken", fullName, owner: status.owner, raced: false };
+  }
+
+  try {
+    const result = await issueSubname({
+      workerUrl: opts.workerUrl,
+      signingKey: opts.signingKey,
+      owner,
+      label: opts.label,
+      parent: opts.parent,
+      cid: opts.cid,
+      chain: opts.chain,
+    });
+    return { kind: "issued", result };
+  } catch (err: any) {
+    if (err instanceof SubnameTakenError) return { kind: "taken", fullName, owner: err.owner, raced: true };
+    if (err instanceof OwnerUnverifiableError) return { kind: "retry", fullName, message: err.message };
+    return { kind: "error", fullName, message: err.message };
+  }
 }
 
 /**

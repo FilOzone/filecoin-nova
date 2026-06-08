@@ -10,16 +10,7 @@ import { listPieces, cleanPieces, toCidV1 } from "./manage.js";
 import { resolveConfig, hasWalletAddress, hasStorageAuth, hasSubnameService } from "./config.js";
 import { ensSigningUrl } from "./signing-url.js";
 import { pollEnsContenthash, pollTxReceipt } from "./poll.js";
-import {
-  checkAvailability,
-  issueSubname,
-  ownerForKey,
-  normalizeLabel,
-  suggestLabel,
-  isValidLabel,
-  SubnameTakenError,
-  OwnerUnverifiableError,
-} from "./subname.js";
+import { issueSubnameOnce, deriveLabel } from "./subname.js";
 import { CID } from "multiformats/cid";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -78,43 +69,38 @@ async function buildSubnameOutput(
   requestedLabel: string | undefined,
   chain: "mainnet" | "calibration",
 ): Promise<Record<string, unknown>> {
-  const parent = config.subnameParent;
-  const workerUrl = config.subnameWorkerUrl;
-  const label = requestedLabel ? normalizeLabel(requestedLabel) : suggestLabel(directory);
-  const fullName = `${label}.${parent}`;
+  const outcome = await issueSubnameOnce({
+    workerUrl: config.subnameWorkerUrl,
+    signingKey: config.pinKey,
+    walletAddress: config.walletAddress,
+    label: deriveLabel(requestedLabel, directory),
+    parent: config.subnameParent,
+    cid,
+    chain,
+  });
 
-  if (!isValidLabel(label)) {
-    return { status: "skipped", reason: `Invalid label: "${label}"` };
-  }
-  const signingKey = config.pinKey;
-  if (!signingKey) {
-    return { status: "skipped", reason: "No signing key available for subname issuance" };
-  }
-  const myOwner = config.walletAddress || ownerForKey(signingKey);
-
-  try {
-    const status = await checkAvailability(workerUrl, fullName);
-    const ownedByMe =
-      !!status.owner && status.owner.toLowerCase() === myOwner.toLowerCase();
-    if (status.exists && !ownedByMe) {
-      return { status: "skipped", reason: `${fullName} is taken by another owner`, fullName };
-    }
-
-    const issued = await issueSubname({ workerUrl, signingKey, owner: myOwner, label, parent, cid, chain });
-    return {
-      status: issued.status,
-      fullName: issued.fullName,
-      url: issued.url,
-      owner: issued.owner,
-    };
-  } catch (err: any) {
-    if (err instanceof SubnameTakenError) {
-      return { status: "skipped", reason: err.message, fullName, owner: err.owner };
-    }
-    if (err instanceof OwnerUnverifiableError) {
-      return { status: "retry", reason: err.message, fullName };
-    }
-    return { status: "error", reason: err.message, fullName };
+  switch (outcome.kind) {
+    case "issued":
+      return {
+        status: outcome.result.status,
+        fullName: outcome.result.fullName,
+        url: outcome.result.url,
+        owner: outcome.result.owner,
+      };
+    case "invalid-label":
+      return { status: "skipped", reason: `Invalid label: "${outcome.label}"` };
+    case "no-key":
+      return { status: "skipped", reason: "No signing key available for subname issuance" };
+    case "taken":
+      // `raced` mirrors the SubnameTakenError message; the pre-check case omits owner.
+      return outcome.raced
+        ? { status: "skipped", reason: `Subname is taken by another owner: ${outcome.fullName}`, fullName: outcome.fullName, owner: outcome.owner }
+        : { status: "skipped", reason: `${outcome.fullName} is taken by another owner`, fullName: outcome.fullName };
+    case "retry":
+      return { status: "retry", reason: outcome.message, fullName: outcome.fullName };
+    case "check-failed":
+    case "error":
+      return { status: "error", reason: outcome.message, fullName: outcome.fullName };
   }
 }
 
