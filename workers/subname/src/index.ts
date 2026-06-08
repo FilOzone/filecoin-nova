@@ -12,8 +12,9 @@
  * can issue names at any depth under it. Real names are single-label
  * (happy -> happy.fcnova.eth, gated by signature). Demo names nest one level
  * under a reserved DEMO_LABEL segment (happy -> happy.demo.fcnova.eth, ungated,
- * no owner). /issue's LABEL_RE forbids dots, so gated names can never land in
- * the *.demo.* namespace -- the two are disjoint by construction.
+ * no owner, but CREATE-ONLY: first-come and never overwritten, so a shared demo
+ * URL can't be hijacked). /issue's LABEL_RE forbids dots, so gated names can
+ * never land in the *.demo.* namespace -- the two are disjoint by construction.
  */
 
 import { createOffchainClient, validateSubname } from "@thenamespace/offchain-manager";
@@ -294,14 +295,13 @@ async function handleDemoIssue(req: Request, env: Env): Promise<Response> {
     return json({ error: "invalid_label" }, 400);
   }
 
-  // Ungated: no owner, no signature. Create or overwrite -- demo names are throwaway.
+  // Ungated (no owner, no signature) but CREATE-ONLY: a demo name is first-come
+  // and is never overwritten. Otherwise anyone could silently hijack a shared
+  // <label>.demo URL. The CID is the deliverable; the name is a best-effort bonus.
   const c = client(env);
   const existing = await c.getSingleSubname(fullName).catch(() => null);
-  if (existing) {
-    await c.updateSubname(fullName, { contenthash });
-  } else {
-    await c.createSubname({ parentName: env.SUBNAME_PARENT, label: nestedLabel, contenthash });
-  }
+  if (existing) return json({ status: "taken_by_other", fullName }, 409);
+  await c.createSubname({ parentName: env.SUBNAME_PARENT, label: nestedLabel, contenthash });
   return json({ fullName, url: `https://${fullName}.limo` });
 }
 

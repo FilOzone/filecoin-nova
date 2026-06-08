@@ -109,6 +109,8 @@ Run interactively and Nova asks you to pick a name, checks whether it's free, an
 nova demo ./dist --subname yoursite       # -> yoursite.demo.fcnova.eth.limo
 ```
 
+Demo names are first-come and can't be re-pointed once taken (there's no wallet to prove they're yours), so pick another if the one you want is in use.
+
 **You own the name.** It's tied to the wallet you deploy with, so only you can change where it points -- re-deploying with the same name updates it to your latest version. This is separate from `--ens`: that points an ENS domain you already own and costs gas; the free name needs neither. Free names are powered by [offchain ENS subnames](https://namespace.ninja) (gasless, served through `eth.limo`).
 
 ---

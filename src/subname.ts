@@ -198,8 +198,10 @@ export async function issueSubname(opts: {
 }
 
 /**
- * Issue a throwaway demo subname (no owner, no signature) under the demo parent,
- * using the user's chosen label (e.g. happy -> happy.demo.fcnova.eth).
+ * Issue a demo subname (no owner, no signature) under the demo parent, using the
+ * user's chosen label (e.g. happy -> happy.demo.fcnova.eth). Demo names are
+ * create-only: an existing name is never overwritten, so this throws
+ * SubnameTakenError on a collision (the caller picks another name or skips).
  */
 export async function issueDemoSubname(
   workerUrl: string,
@@ -211,11 +213,13 @@ export async function issueDemoSubname(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cid, label }),
   });
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (res.status === 409) {
+    throw new SubnameTakenError(typeof body.fullName === "string" ? body.fullName : label);
+  }
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     const reason = typeof body.error === "string" ? body.error : `HTTP ${res.status}`;
     throw new Error(`Demo subname issuance failed: ${reason}`);
   }
-  const body = (await res.json()) as { fullName: string; url: string };
-  return body;
+  return body as { fullName: string; url: string };
 }

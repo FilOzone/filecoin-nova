@@ -204,9 +204,10 @@ async function chooseAndIssueSubname(opts: {
     }
 
     if (ungated) {
+      // Demo names are create-only -- a taken one can't be overwritten, so loop.
       if (status.exists) {
-        const yn = (await ask(promptLabel(`${fullName} already exists. Overwrite it? [Y/n]`))).trim();
-        if (/^n/i.test(yn)) continue;
+        info(`${fullName} is taken -- choose another.`);
+        continue;
       }
     } else {
       const ownedByMe = !!status.owner && status.owner.toLowerCase() === myOwner!.toLowerCase();

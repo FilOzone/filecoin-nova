@@ -13,6 +13,8 @@ import {
   suggestLabel,
   isValidLabel,
   ownerForKey,
+  issueDemoSubname,
+  SubnameTakenError,
   type SubnameClaim,
 } from "./subname.js";
 
@@ -99,4 +101,71 @@ test("tampering with any claim field breaks recovery (forgery fails)", async () 
     const recovered = await recoverMessageAddress({ message: buildClaimMessage(tampered), signature });
     assert.notEqual(recovered.toLowerCase(), TEST_ADDR.toLowerCase());
   }
+});
+
+// --- issueDemoSubname: demo names are create-only (never overwritten) ---
+
+/** Run `fn` with globalThis.fetch stubbed, restoring it afterward. */
+async function withFetch(
+  stub: (url: string, init?: RequestInit) => { ok: boolean; status: number; body: unknown },
+  fn: () => Promise<void>,
+): Promise<void> {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const { ok, status, body } = stub(url, init);
+    return { ok, status, json: async () => body } as Response;
+  }) as typeof fetch;
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+test("issueDemoSubname returns fullName/url on success", async () => {
+  await withFetch(
+    () => ({
+      ok: true,
+      status: 200,
+      body: { fullName: "mysite.demo.fcnova.eth", url: "https://mysite.demo.fcnova.eth.limo" },
+    }),
+    async () => {
+      const issued = await issueDemoSubname("https://worker.example", CLAIM.cid, "mysite");
+      assert.equal(issued.fullName, "mysite.demo.fcnova.eth");
+      assert.equal(issued.url, "https://mysite.demo.fcnova.eth.limo");
+    },
+  );
+});
+
+test("issueDemoSubname throws SubnameTakenError on 409 (no overwrite)", async () => {
+  await withFetch(
+    () => ({ ok: false, status: 409, body: { status: "taken_by_other", fullName: "mysite.demo.fcnova.eth" } }),
+    async () => {
+      await assert.rejects(
+        () => issueDemoSubname("https://worker.example", CLAIM.cid, "mysite"),
+        (err: unknown) => {
+          assert.ok(err instanceof SubnameTakenError);
+          assert.equal(err.fullName, "mysite.demo.fcnova.eth");
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test("issueDemoSubname throws a generic error on other failures", async () => {
+  await withFetch(
+    () => ({ ok: false, status: 400, body: { error: "bad_cid" } }),
+    async () => {
+      await assert.rejects(
+        () => issueDemoSubname("https://worker.example", CLAIM.cid, "mysite"),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.ok(!(err instanceof SubnameTakenError));
+          assert.match(err.message, /bad_cid/);
+          return true;
+        },
+      );
+    },
+  );
 });
