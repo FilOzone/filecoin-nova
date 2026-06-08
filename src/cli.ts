@@ -169,13 +169,18 @@ async function chooseAndIssueSubname(opts: {
     return r === "retry-name" ? null : r;
   }
 
-  // --- Interactive: ask directly for a name, then loop ---
+  // --- Interactive: announce the free name, then ask + loop ---
   console.log("");
+  info(
+    ungated
+      ? `${c.bold}Your site gets a free ENS name${c.reset} ${c.dim}-- instant, no wallet needed.${c.reset}`
+      : `${c.bold}Your site gets a free ENS name${c.reset} ${c.dim}-- gasless, and you own it.${c.reset}`,
+  );
   let firstPrompt = true;
   while (true) {
     let label: string;
     if (firstPrompt) {
-      const input = (await ask(promptLabel(`Choose a free ENS name for your site [${opts.defaultLabel}]:`))).trim();
+      const input = (await ask(promptLabel(`Pick your name [${opts.defaultLabel}]:`))).trim();
       firstPrompt = false;
       label = input ? normalizeLabel(input) : opts.defaultLabel;
     } else {
@@ -426,7 +431,7 @@ async function runDeploy(args: string[]) {
   // 3. ENS name (optional — skip to deploy without ENS)
   if (!ensName && !noEns) {
     console.log("");
-    const input = await ask(promptLabel("ENS domain (leave blank to skip):"));
+    const input = await ask(promptLabel("Already own an ENS domain? Point it here too (blank to skip):"));
     ensName = input || undefined;
   }
 
@@ -1886,7 +1891,7 @@ async function runClone(args: string[]) {
     if (!ensName && !noEns && process.stdin.isTTY && !jsonMode) {
       const { ask: askEns, close: closeEns } = await import("./prompt.js");
       console.log("");
-      const ensInput = await askEns(promptLabel("Point an ENS domain to this site? (leave blank to skip):"));
+      const ensInput = await askEns(promptLabel("Already own an ENS domain? Point it here too (blank to skip):"));
       closeEns();
       if (ensInput && ensInput.trim()) {
         ensName = ensInput.trim();
@@ -2110,7 +2115,7 @@ async function runDemo(args: string[]) {
       // Re-open prompt (close() was called before deploy)
       const { ask: askAgain, close: closeAgain } = await import("./prompt.js");
       console.log("");
-      const ensInput = await askAgain(promptLabel("Have your own ENS name? Enter it to point it here (blank to skip):"));
+      const ensInput = await askAgain(promptLabel("Already own an ENS domain? Point it here too (blank to skip):"));
       closeAgain();
       if (ensInput && ensInput.trim()) {
         ensName = ensInput.trim();
