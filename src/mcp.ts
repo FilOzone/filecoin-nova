@@ -7,9 +7,19 @@ import * as z from "zod/v4";
 import { deploy } from "./deploy.js";
 import { updateEnsContenthash, getEnsContenthash } from "./ens.js";
 import { listPieces, cleanPieces, toCidV1 } from "./manage.js";
-import { resolveConfig, hasWalletAddress, hasStorageAuth } from "./config.js";
+import { resolveConfig, hasWalletAddress, hasStorageAuth, hasSubnameService } from "./config.js";
 import { ensSigningUrl } from "./signing-url.js";
 import { pollEnsContenthash, pollTxReceipt } from "./poll.js";
+import {
+  checkAvailability,
+  issueSubname,
+  ownerForKey,
+  normalizeLabel,
+  suggestLabel,
+  isValidLabel,
+  SubnameTakenError,
+  OwnerUnverifiableError,
+} from "./subname.js";
 import { CID } from "multiformats/cid";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -51,6 +61,63 @@ function redirectConsole<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
+/**
+ * Build the `subname` portion of a deploy/subname tool result.
+ *
+ * One path: sign the claim with the configured key (disk pin key or browser
+ * session key) and assert the owner -- the real wallet when we have one, else
+ * the key's own address. The Worker maps the signer to the true owner. A name
+ * owned by someone else is reported as `skipped`, never overwritten. An update
+ * the Worker can't yet authorize (transient RPC) is `retry`. Best-effort -- any
+ * other error is `error`, never thrown.
+ */
+async function buildSubnameOutput(
+  config: ReturnType<typeof resolveConfig>,
+  cid: string,
+  directory: string,
+  requestedLabel: string | undefined,
+  chain: "mainnet" | "calibration",
+): Promise<Record<string, unknown>> {
+  const parent = config.subnameParent;
+  const workerUrl = config.subnameWorkerUrl;
+  const label = requestedLabel ? normalizeLabel(requestedLabel) : suggestLabel(directory);
+  const fullName = `${label}.${parent}`;
+
+  if (!isValidLabel(label)) {
+    return { status: "skipped", reason: `Invalid label: "${label}"` };
+  }
+  const signingKey = config.pinKey;
+  if (!signingKey) {
+    return { status: "skipped", reason: "No signing key available for subname issuance" };
+  }
+  const myOwner = config.walletAddress || ownerForKey(signingKey);
+
+  try {
+    const status = await checkAvailability(workerUrl, fullName);
+    const ownedByMe =
+      !!status.owner && status.owner.toLowerCase() === myOwner.toLowerCase();
+    if (status.exists && !ownedByMe) {
+      return { status: "skipped", reason: `${fullName} is taken by another owner`, fullName };
+    }
+
+    const issued = await issueSubname({ workerUrl, signingKey, owner: myOwner, label, parent, cid, chain });
+    return {
+      status: issued.status,
+      fullName: issued.fullName,
+      url: issued.url,
+      owner: issued.owner,
+    };
+  } catch (err: any) {
+    if (err instanceof SubnameTakenError) {
+      return { status: "skipped", reason: err.message, fullName, owner: err.owner };
+    }
+    if (err instanceof OwnerUnverifiableError) {
+      return { status: "retry", reason: err.message, fullName };
+    }
+    return { status: "error", reason: err.message, fullName };
+  }
+}
+
 const server = new McpServer(
   { name: "filecoin-nova", version: pkg.version },
 );
@@ -75,6 +142,8 @@ server.registerTool(
       rpcUrl: z.string().optional().describe("Ethereum RPC URL (override default)"),
       providerId: z.number().optional().describe("Storage provider ID"),
       label: z.string().optional().describe("Label for this deploy (shown in nova_manage). Defaults to the directory name."),
+      subname: z.string().optional().describe("Free gasless subname label to claim (e.g. 'mysite' -> mysite.fcnova.eth). Defaults to the directory name. The deploy always attempts a free subname unless noSubname is set."),
+      noSubname: z.boolean().optional().describe("Skip the free gasless subname step"),
       clean: z.boolean().optional().describe("After deploying, remove ALL other pieces - only the new deploy is kept. This is destructive and cannot be undone."),
       calibration: z.boolean().optional().describe("Use calibration testnet instead of mainnet"),
     }),
@@ -144,6 +213,17 @@ server.registerTool(
           };
         }
 
+        // Free, gasless subname (additive to ENS) -- best-effort
+        if (hasSubnameService(authConfig) && !params.noSubname) {
+          output.subname = await buildSubnameOutput(
+            authConfig,
+            result.cid,
+            result.directory,
+            params.subname,
+            params.calibration ? "calibration" : "mainnet",
+          );
+        }
+
         // Post-deploy cleanup
         if (params.clean) {
           try {
@@ -191,13 +271,14 @@ server.registerTool(
     inputSchema: z.object({
       path: z.string().describe("URL to clone (e.g. 'filoz.org') or path to a directory/archive to deploy"),
       maxPages: z.number().optional().describe("Max pages to crawl when cloning a URL (default: 50, 0 = unlimited). Includes sitemap-discovered pages; top-level pages prioritised over deep links."),
+      subname: z.string().optional().describe("Free demo name label to claim (e.g. 'happy' -> happy.demo.fcnova.eth). Defaults to the deployed directory name."),
     }),
   },
   async (params): Promise<CallToolResult> => {
     return redirectConsole(async () => {
       try {
         const { demoDeploy } = await import("./demo.js");
-        const result = await demoDeploy(params.path, { maxPages: params.maxPages });
+        const result = await demoDeploy(params.path, { maxPages: params.maxPages, subname: params.subname });
 
         const output = {
           cid: result.cid,
@@ -205,6 +286,7 @@ server.registerTool(
           directory: result.directory,
           network: "calibration",
           demo: true,
+          ...(result.subname && { subname: result.subname, subnameUrl: result.subnameUrl }),
           permanentHosting: "For permanent hosting, set NOVA_PIN_KEY env var (or sign via browser at https://fil.focify.eth.limo) and use nova_deploy.",
         };
 
@@ -285,6 +367,58 @@ server.registerTool(
           contenthash: result.contenthash,
           ethLimoUrl: result.ethLimoUrl,
         };
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: err.message }],
+        };
+      }
+    });
+  }
+);
+
+// nova_subname - Claim a free gasless ENS subname under the Nova parent
+server.registerTool(
+  "nova_subname",
+  {
+    title: "Claim a Free Gasless Subname",
+    description:
+      "Claim or update a free, gasless ENS subname (e.g. mysite.fcnova.eth) pointing at an IPFS CID. " +
+      "No gas, no ENS domain of your own needed. Signs the claim with NOVA_PIN_KEY and records " +
+      "the deployer's wallet as owner. Re-claiming a name you own updates its CID; a name owned by " +
+      "someone else is left untouched (status 'skipped'). Requires NOVA_PIN_KEY to be set.",
+    inputSchema: z.object({
+      cid: z.string().describe("IPFS CID the subname should resolve to"),
+      label: z.string().optional().describe("Subname label (e.g. 'mysite' -> mysite.fcnova.eth). Defaults to a sanitized CID-based name."),
+      parent: z.string().optional().describe("Parent name (default fcnova.eth, or NOVA_SUBNAME_PARENT)"),
+      calibration: z.boolean().optional().describe("Resolve session-key ownership against calibration testnet instead of mainnet"),
+    }),
+  },
+  async (params): Promise<CallToolResult> => {
+    return redirectConsole(async () => {
+      try {
+        const config = resolveConfig(process.env);
+        if (params.parent) config.subnameParent = params.parent;
+
+        if (!hasSubnameService(config)) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "Subname service is disabled (no NOVA_SUBNAME_WORKER_URL configured)." }],
+          };
+        }
+
+        // 3rd arg is the directory used for the fallback label; 4th is the explicit label.
+        const output = await buildSubnameOutput(
+          config,
+          params.cid,
+          params.cid,
+          params.label,
+          params.calibration ? "calibration" : "mainnet",
+        );
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],

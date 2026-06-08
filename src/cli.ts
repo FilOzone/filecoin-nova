@@ -7,9 +7,20 @@ import { parseArgs } from "node:util";
 import { deploy, dirSize } from "./deploy.js";
 import { demoDeploy } from "./demo.js";
 import { getEnsContenthash, updateEnsContenthash } from "./ens.js";
-import { resolveConfig, hasStorageAuth, hasWalletAddress } from "./config.js";
+import { resolveConfig, hasStorageAuth, hasWalletAddress, hasSubnameService } from "./config.js";
 import { ensSigningUrl } from "./signing-url.js";
 import { pollEnsContenthash } from "./poll.js";
+import {
+  checkAvailability,
+  issueSubname,
+  issueDemoSubname,
+  ownerForKey,
+  normalizeLabel,
+  suggestLabel,
+  isValidLabel,
+  SubnameTakenError,
+  OwnerUnverifiableError,
+} from "./subname.js";
 import { listPieces, cleanPieces, toCidV1, type PieceInfo } from "./manage.js";
 import { relativeTime } from "./subgraph.js";
 import { ask, close } from "./prompt.js";
@@ -83,6 +94,176 @@ async function pollForEnsUpdate(
   return { confirmed: false };
 }
 
+/** What an issue callback returns (gated issueSubname or ungated issueDemoSubname). */
+type IssuedName = { fullName: string; url: string; owner?: string; status?: "created" | "updated" };
+
+/**
+ * Interactive (or one-shot) name picker shared by deploy and demo.
+ *
+ * Interactive: an intro line, then a loop that lets the user choose a name and
+ * tells them exactly what each name's state is -- available (claim it), already
+ * yours (offer to repoint), taken by someone else (pick another), or, for demo
+ * (ungated, `myOwner` undefined), already exists (offer to overwrite). The loop
+ * only ends on a successful issue or an explicit skip.
+ *
+ * Non-interactive (`--json` / CI / piped): issue the default label once and skip
+ * silently on an invalid label or a name owned by someone else -- never prompts.
+ *
+ * Best-effort: a Worker/RPC error is reported and resolves to null (the CID is
+ * already done), never thrown.
+ */
+async function chooseAndIssueSubname(opts: {
+  workerUrl: string;
+  parent: string;
+  defaultLabel: string;
+  myOwner?: string; // undefined => ungated demo name
+  interactive: boolean;
+  issue: (label: string) => Promise<IssuedName>;
+}): Promise<IssuedName | null> {
+  const { workerUrl, parent, myOwner, interactive, issue } = opts;
+  const ungated = !myOwner;
+  const noun = ungated ? "Demo name" : "Name";
+
+  const tryIssue = async (label: string): Promise<IssuedName | null | "retry-name"> => {
+    try {
+      const issued = await issue(label);
+      console.log("");
+      success(`${noun} ready: ${c.bold}${issued.url}${c.reset}`);
+      return issued;
+    } catch (err: any) {
+      if (err instanceof SubnameTakenError) {
+        info(`${err.fullName} was just taken.`);
+        return "retry-name";
+      }
+      if (err instanceof OwnerUnverifiableError) {
+        info(err.message);
+        info(`${c.dim}Your site is live at the gateway; re-run to set the name once ownership confirms.${c.reset}`);
+        return null;
+      }
+      info(`${noun} skipped: ${err.message}`);
+      return null;
+    }
+  };
+
+  // --- Non-interactive: one shot, skip silently on collision/invalid ---
+  if (!interactive) {
+    const label = opts.defaultLabel;
+    if (!isValidLabel(label)) {
+      info(`Skipping name: "${label}" is not a valid label.`);
+      return null;
+    }
+    if (!ungated) {
+      try {
+        const status = await checkAvailability(workerUrl, `${label}.${parent}`);
+        const ownedByMe = !!status.owner && status.owner.toLowerCase() === myOwner!.toLowerCase();
+        if (status.exists && !ownedByMe) {
+          info(`Name ${label}.${parent} is taken -- skipping (use --subname to choose another).`);
+          return null;
+        }
+      } catch (err: any) {
+        info(`Free name skipped: ${err.message}`);
+        return null;
+      }
+    }
+    const r = await tryIssue(label);
+    return r === "retry-name" ? null : r;
+  }
+
+  // --- Interactive: ask directly for a name, then loop ---
+  console.log("");
+  let firstPrompt = true;
+  while (true) {
+    let label: string;
+    if (firstPrompt) {
+      const input = (await ask(promptLabel(`Choose a free ENS name for your site [${opts.defaultLabel}]:`))).trim();
+      firstPrompt = false;
+      label = input ? normalizeLabel(input) : opts.defaultLabel;
+    } else {
+      const input = (await ask(promptLabel("Choose another name (blank to skip):"))).trim();
+      if (!input) return null;
+      label = normalizeLabel(input);
+    }
+
+    if (!isValidLabel(label)) {
+      info("Names use a-z, 0-9, and hyphens.");
+      continue;
+    }
+
+    const fullName = `${label}.${parent}`;
+    let status;
+    try {
+      status = await checkAvailability(workerUrl, fullName);
+    } catch (err: any) {
+      info(`Couldn't check ${fullName}: ${err.message}`);
+      continue;
+    }
+
+    if (ungated) {
+      if (status.exists) {
+        const yn = (await ask(promptLabel(`${fullName} already exists. Overwrite it? [Y/n]`))).trim();
+        if (/^n/i.test(yn)) continue;
+      }
+    } else {
+      const ownedByMe = !!status.owner && status.owner.toLowerCase() === myOwner!.toLowerCase();
+      if (status.exists && ownedByMe) {
+        const yn = (await ask(promptLabel(`You already own ${fullName}. Point it at this deploy? [Y/n]`))).trim();
+        if (/^n/i.test(yn)) continue;
+      } else if (status.exists && !ownedByMe) {
+        info(`${fullName} is taken by someone else.`);
+        continue;
+      }
+    }
+
+    const r = await tryIssue(label);
+    if (r === "retry-name") continue;
+    return r;
+  }
+}
+
+/**
+ * Post-deploy: claim a free, gasless subname under the Nova parent.
+ * Signs with whatever key the CLI holds and asserts the owner (real wallet when
+ * known, else the pin key's address). Delegates the name UX to
+ * chooseAndIssueSubname. Best-effort: never throws past the CID.
+ */
+async function runSubnameStep(
+  config: ReturnType<typeof resolveConfig>,
+  result: {
+    cid: string;
+    directory: string;
+    subname?: string;
+    subnameUrl?: string;
+    subnameOwner?: string;
+  },
+  opts: { requestedLabel?: string; interactive: boolean; chain: "mainnet" | "calibration" },
+): Promise<void> {
+  const parent = config.subnameParent;
+  const workerUrl = config.subnameWorkerUrl;
+  const signingKey = config.pinKey;
+  if (!signingKey) return; // nothing to sign with -- skip silently
+
+  const myOwner = config.walletAddress || ownerForKey(signingKey);
+  const defaultLabel = opts.requestedLabel
+    ? normalizeLabel(opts.requestedLabel)
+    : suggestLabel(result.directory);
+
+  const issued = await chooseAndIssueSubname({
+    workerUrl,
+    parent,
+    defaultLabel,
+    myOwner,
+    interactive: opts.interactive,
+    issue: (label) =>
+      issueSubname({ workerUrl, signingKey, owner: myOwner, label, parent, cid: result.cid, chain: opts.chain }),
+  });
+
+  if (issued) {
+    result.subname = issued.fullName;
+    result.subnameUrl = issued.url;
+    result.subnameOwner = issued.owner ?? myOwner;
+  }
+}
+
 const HELP = `
   ${c.cyan}${c.bold}Nova${c.reset} ${c.dim}- Clone, deploy, and manage websites on Filecoin Onchain Cloud${c.reset}
 
@@ -113,6 +294,8 @@ const HELP = `
     ${c.cyan}NOVA_ENS_NAME${c.reset}          Default ENS domain
     ${c.cyan}NOVA_RPC_URL${c.reset}           Ethereum RPC URL (override default RPCs)
     ${c.cyan}NOVA_PROVIDER_ID${c.reset}       Storage provider ID
+    ${c.cyan}NOVA_SUBNAME_PARENT${c.reset}    Parent for free subnames (default fcnova.eth)
+    ${c.cyan}NOVA_SUBNAME_WORKER_URL${c.reset} Subname Worker URL (set "" to disable)
     ${c.cyan}NOVA_TX_TIMEOUT_MS${c.reset}     ENS tx confirmation budget (default 600000)
     ${c.cyan}CLOUDFLARE_API_TOKEN${c.reset}   CF token (site deploy + worker deploy)
     ${c.cyan}NOVA_WORKER_NAME${c.reset}       Override bundled Worker script name
@@ -123,6 +306,8 @@ const HELP = `
 
     ${c.dim}--ens <name>${c.reset}          ENS domain (e.g. desite.ezpdpz.eth)
     ${c.dim}--no-ens${c.reset}              Skip ENS prompt and ENS update
+    ${c.dim}--subname <label>${c.reset}     Free gasless name to claim (e.g. mysite -> mysite.fcnova.eth)
+    ${c.dim}--no-subname${c.reset}          Skip the free subname step
     ${c.dim}--label <text>${c.reset}       Label for this deploy (shown in nova manage)
     ${c.dim}--rpc-url <url>${c.reset}       Ethereum RPC URL
     ${c.dim}--provider-id <id>${c.reset}    Storage provider ID
@@ -181,6 +366,8 @@ async function runDeploy(args: string[]) {
       label: { type: "string" },
       clean: { type: "boolean", default: false },
       "no-ens": { type: "boolean", default: false },
+      subname: { type: "string" },
+      "no-subname": { type: "boolean", default: false },
       calibration: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
@@ -190,6 +377,7 @@ async function runDeploy(args: string[]) {
   const jsonMode = values.json!;
   const cleanAfterDeploy = values.clean!;
   const noEns = values["no-ens"]!;
+  const noSubname = values["no-subname"]!;
   if (jsonMode) muteConsole();
 
   banner();
@@ -324,6 +512,16 @@ async function runDeploy(args: string[]) {
     }
   }
 
+  // Free, gasless subname under the Nova parent (additive to the ENS path above)
+  if (hasSubnameService(config) && !noSubname) {
+    await runSubnameStep(config, result, {
+      requestedLabel: values.subname,
+      interactive: process.stdin.isTTY && !jsonMode,
+      chain: isMainnet ? "mainnet" : "calibration",
+    });
+    close(); // runSubnameStep may re-open the prompt; close so the process can exit
+  }
+
   // Post-deploy cleanup
   let cleanedResult: { removed: number; failed: number; keptCids: string[]; error?: string } | undefined;
   if (cleanAfterDeploy && hasStorageAuth(config)) {
@@ -369,6 +567,11 @@ async function runDeploy(args: string[]) {
       ...(result.ensName && { ensName: result.ensName }),
       ...(result.txHash && { txHash: result.txHash }),
       ...(result.ethLimoUrl && { ethLimoUrl: result.ethLimoUrl }),
+      ...(result.subname && {
+        subname: result.subname,
+        subnameUrl: result.subnameUrl,
+        subnameOwner: result.subnameOwner,
+      }),
       ...(cleanedResult && { cleaned: cleanedResult }),
     }));
   }
@@ -1774,6 +1977,7 @@ async function runDemo(args: string[]) {
   ${c.bold}Options${c.reset}
 
     ${c.cyan}--ens${c.reset} <name>                  ENS domain to update after deploy
+    ${c.cyan}--subname${c.reset} <label>            Free demo name to claim (e.g. happy -> happy.demo.fcnova.eth)
     ${c.cyan}--max-pages${c.reset} <n>              Max pages to crawl (default: 50, 0 = unlimited)
     ${c.cyan}--json${c.reset}                       Output result as JSON
 
@@ -1791,6 +1995,7 @@ async function runDemo(args: string[]) {
     args: args.slice(1),
     options: {
       ens: { type: "string" },
+      subname: { type: "string" },
       "max-pages": { type: "string" },
       "provider-id": { type: "string" },
       json: { type: "boolean", default: false },
@@ -1854,8 +2059,16 @@ async function runDemo(args: string[]) {
 
   close();
 
+  const config = resolveConfig(process.env);
+  const interactive = !!process.stdin.isTTY && !jsonMode;
   const providerId = values["provider-id"] ? Number(values["provider-id"]) : undefined;
-  const result = await demoDeploy(input, { maxPages, providerId });
+  // Interactive runs name the demo themselves (below); non-interactive auto-issues.
+  const result = await demoDeploy(input, {
+    maxPages,
+    providerId,
+    subname: values.subname,
+    autoSubname: !interactive,
+  });
 
   if (jsonMode) {
     unmuteConsole();
@@ -1868,16 +2081,36 @@ async function runDemo(args: string[]) {
       pages: result.pages,
       network: "calibration",
       demo: true,
+      ...(result.subname && { subname: result.subname, subnameUrl: result.subnameUrl }),
       ...(values.ens && { ensUpdateUrl: `https://ens.focify.eth.limo/?name=${encodeURIComponent(values.ens)}&cid=${encodeURIComponent(result.cid)}` }),
     }));
   } else {
+    // Free demo name -- interactive picker, or print the auto-issued one.
+    if (interactive && hasSubnameService(config)) {
+      const issued = await chooseAndIssueSubname({
+        workerUrl: config.subnameWorkerUrl,
+        parent: `demo.${config.subnameParent}`,
+        defaultLabel: values.subname ? normalizeLabel(values.subname) : suggestLabel(result.directory),
+        myOwner: undefined, // ungated demo
+        interactive: true,
+        issue: (label) => issueDemoSubname(config.subnameWorkerUrl, result.cid, label),
+      });
+      if (issued) {
+        result.subname = issued.fullName;
+        result.subnameUrl = issued.url;
+      }
+      close();
+    } else if (result.subnameUrl) {
+      console.log("");
+      success(`Free name: ${c.bold}${result.subnameUrl}${c.reset}`);
+    }
     // Ask about ENS after deploy
     let ensName = values.ens;
     if (!ensName && process.stdin.isTTY) {
       // Re-open prompt (close() was called before deploy)
       const { ask: askAgain, close: closeAgain } = await import("./prompt.js");
       console.log("");
-      const ensInput = await askAgain(promptLabel("Point an ENS domain to this site? (leave blank to skip):"));
+      const ensInput = await askAgain(promptLabel("Have your own ENS name? Enter it to point it here (blank to skip):"));
       closeAgain();
       if (ensInput && ensInput.trim()) {
         ensName = ensInput.trim();

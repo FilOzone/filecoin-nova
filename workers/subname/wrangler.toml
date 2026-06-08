@@ -1,0 +1,16 @@
+name = "subname"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+SUBNAME_PARENT = "fcnova.eth"
+# Demo names are issued under the same parent + key, nested one level: the
+# label "happy" becomes "happy.demo" -> happy.demo.fcnova.eth (ungated, no owner).
+DEMO_LABEL = "demo"
+
+[[kv_namespaces]]
+binding = "RATELIMIT"
+id = "3f7b786223ec4cc0aff96db72f7520d7"
+
+# wrangler secret put NAMESPACE_API_KEY  (single key for fcnova.eth; never committed)

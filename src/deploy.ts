@@ -32,6 +32,14 @@ export interface DeployResult {
   ethLimoUrl?: string;
   /** The directory that was actually deployed (may differ from input if archive) */
   directory: string;
+  /**
+   * Free gasless subname (e.g. mysite.fcnova.eth), if one was issued.
+   * deploy() never sets these -- subname issuance is orchestrated by callers
+   * (CLI/MCP) so the session-key-vs-real-wallet distinction stays in one place.
+   */
+  subname?: string;
+  subnameUrl?: string;
+  subnameOwner?: string;
 }
 
 export function dirSize(dir: string, seen = new Set<number>()): number {

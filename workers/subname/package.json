@@ -1,0 +1,23 @@
+{
+  "name": "nova-subname-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nova-operated Cloudflare Worker that issues free gasless ENS subnames under fcnova.eth. Sole holder of the master Namespace API key. NOT part of the filecoin-nova npm package.",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "lint": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types"
+  },
+  "dependencies": {
+    "@thenamespace/offchain-manager": "^1.0.7",
+    "multiformats": "^13.0.0",
+    "viem": "^2.47.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "typescript": "^5.7.0",
+    "wrangler": "4.95.0"
+  }
+}

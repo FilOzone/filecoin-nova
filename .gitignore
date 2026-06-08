@@ -2,3 +2,8 @@ node_modules/
 dist/
 .env
 CLAUDE.md
+.claude/settings.local.json
+
+# Cloudflare Worker secrets / local state (workers/subname)
+.dev.vars
+.wrangler/
