@@ -389,9 +389,40 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   let detectedDefaultLocale: string | undefined;
   let detectedLocaleCodes: string[] = [];
 
+  let proxyOption: { server: string; username?: string; password?: string } | undefined;
+  if (process.env.NOVA_PROXY) {
+    let challenged = false;
+    try {
+      const resp = await fetch(config.url, {
+        redirect: "follow",
+        headers: {
+          "user-agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      challenged = resp.headers.get("cf-mitigated") === "challenge";
+      if (!challenged && [403, 429, 503].includes(resp.status)) {
+        challenged = /just a moment|cf_chl|challenge-platform|checking your browser/i.test(
+          await resp.text(),
+        );
+      }
+    } catch {
+      proxyOption = undefined;
+    }
+    if (challenged) {
+      const u = new URL(process.env.NOVA_PROXY);
+      proxyOption = { server: `${u.protocol}//${u.host}` };
+      if (u.username) proxyOption.username = decodeURIComponent(u.username);
+      if (u.password) proxyOption.password = decodeURIComponent(u.password);
+      info("  Security challenge detected -- routing clone through proxy.");
+    }
+  }
+
   const browser = await playwright.chromium.launch({
     headless: true,
     args: ["--disable-blink-features=AutomationControlled"],
+    ...(proxyOption ? { proxy: proxyOption } : {}),
   });
   try {
   const context = await browser.newContext({
@@ -411,10 +442,10 @@ export async function clone(config: CloneConfig): Promise<CloneResult> {
   /** Wait for security challenge pages (Vercel, Cloudflare) to resolve. */
   async function waitForChallenge(pg: import("playwright").Page): Promise<void> {
     const title = await pg.title();
-    if (/vercel.*security|security.*checkpoint|cloudflare|checking your browser/i.test(title)) {
+    if (/vercel.*security|security.*checkpoint|cloudflare|checking your browser|just a moment/i.test(title)) {
       info("  Waiting for security challenge...");
       await pg.waitForFunction(
-        () => !/vercel|security.*checkpoint|cloudflare|checking your browser/i.test(document.title),
+        () => !/vercel|security.*checkpoint|cloudflare|checking your browser|just a moment/i.test(document.title),
         { timeout: 30000 },
       ).catch(() => {});
     }
