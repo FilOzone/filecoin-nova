@@ -12,6 +12,7 @@
     "./manage": "./dist/manage.js"
   },
   "bin": {
+    "filecoin-nova": "./dist/cli.js",
     "nova": "./dist/cli.js",
     "nova-mcp": "./dist/mcp.js"
   },
