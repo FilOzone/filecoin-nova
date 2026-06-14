@@ -61,5 +61,12 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
+  },
+  "bugs": {
+    "url": "https://github.com/owner/repo/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
   }
 }
