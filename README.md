@@ -79,7 +79,7 @@ When it's done, your site is live at:
 
 > `https://mysite.eth.limo` -- if you set up an ENS domain
 >
-> `https://<cid>.ipfs.dweb.link` -- always available via IPFS gateway
+> `https://<cid>.ipfs.dweb.link` -- via a public IPFS gateway (best effort; the public gateways rate-limit automated traffic, so use your own domain with `nova site deploy` for anything that must stay up)
 
 A **CID** (Content Identifier) is a unique fingerprint for your content on IPFS. Same content always produces the same CID.
 
