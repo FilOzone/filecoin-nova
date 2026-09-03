@@ -12,8 +12,8 @@ const API_CACHE_TTL_SECONDS = 300
 const BROWSER_CACHE_TTL_SECONDS = 300
 const IMMUTABLE_CACHE_TTL_SECONDS = 31536000
 const R2_MAX_OBJECT_BYTES = 50 * 1024 * 1024
-const CONTENT_CACHE_ORIGIN = 'https://foc-site-cache.internal'
-const FOC_DIRECT_HOSTS = new Set(['cloud.filecoincloud.io'])
+const CONTENT_CACHE_ORIGIN = 'https://foc-site-cache-v2.internal'
+const FOC_DIRECT_HOSTS = null
 const PROVIDER_CACHE_TTL_SECONDS = 600
 
 // Per-host D1 binding. Maps a request hostname to which filbeam D1 database to query.
@@ -384,6 +384,7 @@ async function handleIpfs(request, env, ctx, host, pathname, search) {
 
   const isHead = request.method === 'HEAD'
   const isRange = request.headers.has('range')
+  const focDirect = FOC_DIRECT_HOSTS === null || FOC_DIRECT_HOSTS.has(host)
   const contentKey = `${cid}${pathname}`
   const cache = caches.default
   const cacheKey = new Request(`${CONTENT_CACHE_ORIGIN}/${contentKey}`)
@@ -407,7 +408,7 @@ async function handleIpfs(request, env, ctx, host, pathname, search) {
       object = null
     }
     const source = object && object.customMetadata ? object.customMetadata.source : undefined
-    const preferFoc = FOC_DIRECT_HOSTS.has(host) && !isRange && !(source && source.startsWith('foc:'))
+    const preferFoc = focDirect && !isRange && !(source && source.startsWith('foc:'))
     if (object && preferFoc) staleObject = object
     if (object && !preferFoc) {
       return r2Response(object, cache, cacheKey, ctx, cid, isHead, isRange)
@@ -415,7 +416,7 @@ async function handleIpfs(request, env, ctx, host, pathname, search) {
   }
 
   const errors = []
-  if (FOC_DIRECT_HOSTS.has(host) && !isRange) {
+  if (focDirect && !isRange) {
     try {
       const providers = await cachedProviders(cache, ctx, cid)
       const result = await resolveFromFoc(cid, pathname, providers)
