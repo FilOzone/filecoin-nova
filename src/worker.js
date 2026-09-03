@@ -7,6 +7,10 @@ const GATEWAYS = [
 const PER_GATEWAY_TIMEOUT_MS = 15000
 const EDGE_CACHE_TTL_SECONDS = 300
 const API_CACHE_TTL_SECONDS = 300
+const BROWSER_CACHE_TTL_SECONDS = 300
+const IMMUTABLE_CACHE_TTL_SECONDS = 31536000
+const R2_MAX_OBJECT_BYTES = 50 * 1024 * 1024
+const CONTENT_CACHE_ORIGIN = 'https://foc-site-cache.internal'
 
 // Per-host D1 binding. Maps a request hostname to which filbeam D1 database to query.
 // Keys must cover every FOC-served host (staging + production) that needs live data.
@@ -198,7 +202,7 @@ export default {
     if (path.startsWith('/api/')) {
       return handleApi(request, env, ctx, host, path, url.searchParams)
     }
-    return handleIpfs(request, env, ctx, host, url.pathname + url.search)
+    return handleIpfs(request, env, ctx, host, url.pathname, url.search)
   },
 }
 
@@ -364,7 +368,7 @@ async function cacheWrap(request, ctx, fn) {
   }
 }
 
-async function handleIpfs(request, env, ctx, host, path) {
+async function handleIpfs(request, env, ctx, host, pathname, search) {
   const cid = await env.CIDS.get(host)
   if (!cid) {
     return new Response(`No CID registered for ${host}`, { status: 404 })
@@ -374,19 +378,59 @@ async function handleIpfs(request, env, ctx, host, path) {
     return new Response('Method not allowed', { status: 405 })
   }
 
+  const isHead = request.method === 'HEAD'
+  const isRange = request.headers.has('range')
+  const contentKey = `${cid}${pathname}`
   const cache = caches.default
-  const cacheKey = new Request(request.url, request)
-  const cached = await cache.match(cacheKey)
-  if (cached) {
-    const res = new Response(cached.body, cached)
-    res.headers.set('x-foc-cache', 'HIT')
-    return res
+  const cacheKey = new Request(`${CONTENT_CACHE_ORIGIN}/${contentKey}`)
+
+  if (!isRange) {
+    const cached = await cache.match(cacheKey)
+    if (cached) {
+      return contentResponse(cached.body, cached.headers, cached.status, cid, 'HIT', isHead)
+    }
+  }
+
+  const bucket = env.SITE_CACHE
+  if (bucket) {
+    let object = null
+    try {
+      object = isHead
+        ? await bucket.head(contentKey)
+        : await bucket.get(contentKey, isRange ? { range: request.headers } : undefined)
+    } catch (err) {
+      object = null
+    }
+    if (object) {
+      const headers = new Headers()
+      object.writeHttpMetadata(headers)
+      headers.set('etag', object.httpEtag)
+      headers.set('accept-ranges', 'bytes')
+      headers.set('x-foc-gateway', 'r2')
+      let status = 200
+      let body = isHead ? null : object.body
+      if (isRange && object.range) {
+        const start = object.range.offset ?? object.size - object.range.suffix
+        const length = object.range.length ?? object.size - start
+        headers.set('content-range', `bytes ${start}-${start + length - 1}/${object.size}`)
+        headers.set('content-length', String(length))
+        status = 206
+      } else {
+        headers.set('content-length', String(object.size))
+        if (!isHead) {
+          const [toClient, toCache] = object.body.tee()
+          body = toClient
+          ctx.waitUntil(cache.put(cacheKey, immutableResponse(toCache, headers, cid)))
+        }
+      }
+      return contentResponse(body, headers, status, cid, 'R2', isHead)
+    }
   }
 
   const errors = []
   for (const gw of GATEWAYS) {
     try {
-      const upstream = gw.url(cid, path)
+      const upstream = gw.url(cid, pathname + search)
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), PER_GATEWAY_TIMEOUT_MS)
 
@@ -412,10 +456,11 @@ async function handleIpfs(request, env, ctx, host, path) {
       })
       response.headers.set('x-foc-gateway', gw.name)
       response.headers.set('x-foc-cid', cid)
-      response.headers.set('cache-control', `public, max-age=${EDGE_CACHE_TTL_SECONDS}`)
+      response.headers.set('x-foc-cache', 'MISS')
+      response.headers.set('cache-control', `public, max-age=${BROWSER_CACHE_TTL_SECONDS}`)
 
-      if (upstreamRes.ok && request.method === 'GET') {
-        ctx.waitUntil(cache.put(cacheKey, response.clone()))
+      if (upstreamRes.status === 200 && !isHead && !isRange) {
+        ctx.waitUntil(persistContent(bucket, cache, contentKey, cacheKey, response.clone(), cid, gw.name))
       }
 
       return response
@@ -428,6 +473,36 @@ async function handleIpfs(request, env, ctx, host, path) {
     status: 502,
     headers: { 'content-type': 'text/plain; charset=utf-8' },
   })
+}
+
+function contentResponse(body, sourceHeaders, status, cid, cacheState, isHead) {
+  const headers = new Headers(sourceHeaders)
+  headers.set('x-foc-cid', cid)
+  headers.set('x-foc-cache', cacheState)
+  headers.set('cache-control', `public, max-age=${BROWSER_CACHE_TTL_SECONDS}`)
+  return new Response(isHead ? null : body, { status, headers })
+}
+
+function immutableResponse(body, sourceHeaders, cid) {
+  const headers = new Headers(sourceHeaders)
+  headers.set('x-foc-cid', cid)
+  headers.set('cache-control', `public, max-age=${IMMUTABLE_CACHE_TTL_SECONDS}, immutable`)
+  return new Response(body, { status: 200, headers })
+}
+
+async function persistContent(bucket, cache, contentKey, cacheKey, res, cid, gatewayName) {
+  const body = await res.arrayBuffer()
+  const contentType = res.headers.get('content-type') || 'application/octet-stream'
+  const headers = new Headers({
+    'content-type': contentType,
+    'content-length': String(body.byteLength),
+    'x-foc-gateway': gatewayName,
+  })
+  const writes = [cache.put(cacheKey, immutableResponse(body, headers, cid))]
+  if (bucket && body.byteLength <= R2_MAX_OBJECT_BYTES) {
+    writes.push(bucket.put(contentKey, body, { httpMetadata: { contentType } }))
+  }
+  await Promise.all(writes)
 }
 
 function filterRequestHeaders(headers) {

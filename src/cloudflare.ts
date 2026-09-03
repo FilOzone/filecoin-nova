@@ -100,16 +100,27 @@ export async function uploadWorkerScript(
   opts: {
     compatibilityDate?: string;
     kvBindings?: Array<{ name: string; namespaceId: string }>;
+    r2Bindings?: Array<{ name: string; bucketName: string }>;
+    keepBindings?: string[];
   } = {},
 ): Promise<string> {
+  const r2Bindings = opts.r2Bindings ?? [];
   const metadata = {
     main_module: "worker.js",
     compatibility_date: opts.compatibilityDate ?? "2026-04-01",
-    bindings: (opts.kvBindings ?? []).map((b) => ({
-      type: "kv_namespace",
-      name: b.name,
-      namespace_id: b.namespaceId,
-    })),
+    bindings: [
+      ...(opts.kvBindings ?? []).map((b) => ({
+        type: "kv_namespace",
+        name: b.name,
+        namespace_id: b.namespaceId,
+      })),
+      ...r2Bindings.map((b) => ({
+        type: "r2_bucket",
+        name: b.name,
+        bucket_name: b.bucketName,
+      })),
+    ],
+    keep_bindings: opts.keepBindings ?? (r2Bindings.length > 0 ? ["secret_text"] : ["secret_text", "r2_bucket"]),
   };
 
   const form = new FormData();

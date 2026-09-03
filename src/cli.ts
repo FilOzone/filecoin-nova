@@ -1955,19 +1955,23 @@ async function runWorker(args: string[]) {
       kv:      { type: "string", default: DEFAULT_KV_TITLE },
       compat:  { type: "string", default: DEFAULT_COMPAT_DATE },
       account: { type: "string" },
+      r2:      { type: "string" },
     },
   });
   const scriptName = values.name as string;
   const kvTitle = values.kv as string;
   const compat = values.compat as string;
+  const r2Bucket = values.r2 as string | undefined;
   const accountId = (values.account as string) || (await resolveAccount(token)).accountId;
   info(`Deploying Worker ${scriptName} to account ${accountId}`);
   const kvId = await ensureKvNamespace(token, accountId, kvTitle);
   info(`  KV: ${kvTitle} (${kvId})`);
+  if (r2Bucket) info(`  R2: ${r2Bucket} (SITE_CACHE)`);
   const source = loadBundledWorker();
   const deploymentId = await uploadWorkerScript(token, accountId, scriptName, source, {
     compatibilityDate: compat,
     kvBindings: [{ name: "CIDS", namespaceId: kvId }],
+    r2Bindings: r2Bucket ? [{ name: "SITE_CACHE", bucketName: r2Bucket }] : undefined,
   });
   success(`  deployed: ${deploymentId || scriptName}`);
 }
