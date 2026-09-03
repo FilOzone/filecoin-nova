@@ -167,7 +167,7 @@ Test fixes on the deployed clone via Playwright route interception before editin
 - Publish: `npm publish` (token already configured)
 - Bump version in package.json before publishing (mcp.ts reads version from package.json automatically)
 - Always bump after pushing changes - don't wait for user to ask
-- After npm publish, ALWAYS update focify-me: `ssh 77.42.75.71 'cd ~/focify-me && npm install filecoin-nova@latest'` then `pm2 restart focify-me`
+- focify-me needs no update after a publish: its server spawns `npx -y --package filecoin-nova@latest nova`, so every demo run resolves the newest version, and `filecoin-nova` is not in its package.json. The only override is a `NOVA_CLI` env var on the PM2 process pointing at a local build; if that is set, the npm version is ignored until it is cleared (`pm2 delete && pm2 start ecosystem.config.cjs && pm2 save`).
 
 ## GitHub Action
 - Composite action at `.github/action/action.yml` -- wraps `nova deploy --json`
