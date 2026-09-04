@@ -5,12 +5,13 @@ Nova - deploy and manage websites on Filecoin Onchain Cloud with ENS resolution.
 
 Single package with two entry points:
 - `nova` CLI - interactive deploy, ENS update, status check, storage management
-- `nova-mcp` - MCP server (11 tools for Claude Code, Claude Desktop, Cursor, Windsurf, VS Code)
+- `nova-mcp` - MCP server (12 tools for Claude Code, Claude Desktop, Cursor, Windsurf, VS Code)
 
 ## Architecture
 ```
 CLI (nova)                  MCP Server (nova-mcp)
 nova deploy [path]    <-->  nova_deploy tool
+nova deploy --subname <-->  nova_subname tool
 nova ens <cid>        <-->  nova_ens tool
 nova status           <-->  nova_status tool
 nova manage           <-->  nova_manage tool
@@ -20,6 +21,7 @@ nova manage clean     <-->  nova_manage_clean tool
 ## CLI Commands
 - `nova deploy [path]` - Deploy directory or archive to FOC, optionally update ENS
 - `nova deploy --clean` - Deploy and remove ALL other pieces (only new deploy kept)
+- `nova deploy --subname <label>` - Claim a free gasless `<label>.fcnova.eth` offchain ENS name (interactive picker by default; `--no-subname` to skip)
 - `nova ens <name>` - Check ENS contenthash + pin status (read-only)
 - `nova ens <cid> --ens <name>` - Point ENS domain to an IPFS CID (write mode)
 - `nova info <cid>` - Show details for a specific deployment (dataset, pieces, size, proofs)
@@ -40,9 +42,10 @@ src/upload.ts    - Direct upload to FOC via synapse-sdk (streams CAR to provider
 src/subgraph.ts  - PDP Scan subgraph queries (Goldsky) for timestamps, sizes, proof data
 src/deploy.ts    - Orchestrates upload + ENS
 src/ens.ts       - ENS contenthash encoding/updating/reading (ethers v6)
+src/subname.ts   - Free offchain ENS subname client (claim msg, sign, issue; fetches the Worker, no SDK/secrets)
 src/archive.ts   - Archive detection and extraction to temp dir
 src/manage.ts    - Storage management (list pieces, clean duplicates/old deploys)
-src/mcp.ts       - MCP server (11 tools: deploy, demo, ens, status, manage, manage_clean, poll, clone, info, wallet, download)
+src/mcp.ts       - MCP server (12 tools: deploy, subname, demo, ens, status, manage, manage_clean, poll, clone, info, wallet, download)
 src/prompt.ts    - Readline wrapper (lazy init)
 src/config.ts    - Environment variable resolution (no credentials file)
 src/poll.ts      - On-chain state polling for browser wallet signing flows
@@ -50,7 +53,18 @@ src/signing-url.ts - Browser signing page URL construction
 src/demo.ts      - Demo mode (embedded calibnet session key)
 src/clone.ts     - Site cloning via Playwright (crawl, asset download, locale detection)
 src/ui.ts        - Visual design system (colours, gutter, labels)
+
+workers/subname/ - Cloudflare Worker (NOT in npm package): sole holder of the Namespace master API key, issues free offchain subnames. Own package.json/tsconfig/wrangler.toml. Deployed via wrangler, not `nova worker deploy`.
 ```
+
+## Offchain ENS Subnames (free, gasless)
+Additive to the onchain `--ens` path. Every deploy can get a free `<label>.fcnova.eth` name (demo: `<label>.demo.fcnova.eth`), via Namespace offchain subnames (`@thenamespace/offchain-manager`).
+- **Trust model:** the Namespace master key gates ALL writes, so it lives ONLY in `workers/subname/` (a Cloudflare Worker). The CLI/MCP are pure `fetch` clients (`src/subname.ts`) -- no SDK, no key.
+- **Ownership (no DB, no separate signing page):** the CLI signs a claim `{label,parent,cid,expiry,owner}` with whatever key it holds (disk pin key, or the browser session key) and asserts `owner`. Worker: on CREATE records the asserted owner (no on-chain read -- a wrong owner only self-griefs); on UPDATE requires the signer to control the stored owner (signer==owner for disk keys, or signer resolves to owner via the on-chain SessionKeyRegistry for browser session keys). Transient Filecoin RPC failure on update -> retryable 503 (`OwnerUnverifiableError`), never an overwrite.
+- **Demo isolation:** demo names nest under a reserved `demo` label (`<label>.demo.fcnova.eth`), ungated (no owner) but **create-only** -- first-come, and an existing demo name is never overwritten (a `/demo-issue` for a name that exists returns `409 taken_by_other`), so a shared demo URL can't be silently hijacked. `/issue`'s `LABEL_RE` forbids dots, so gated and demo namespaces can never collide.
+- **CLI UX:** interactive picker (`chooseAndIssueSubname` in `cli.ts`) -- asks for a name, checks availability, loops on taken/owned/invalid. Non-interactive/`--json`/CI issues the derived/`--subname` label once, skips silently on collision.
+- **Worker endpoints:** `POST /issue {label,parent,cid,expiry,owner,signature,chain}`, `POST /demo-issue {cid,label}` (create-only: `409 taken_by_other` if the name already exists), `GET /status?name=`. Bindings: KV `RATELIMIT` (rate-limit + replay guard), secret `NAMESPACE_API_KEY`, vars `SUBNAME_PARENT`/`DEMO_LABEL`, optional `FIL_RPC_MAINNET`/`FIL_RPC_CALIBRATION` (default glif; note glif caps `eth_getLogs` at 2880 blocks).
+- **Setup:** `cd workers/subname && wrangler kv namespace create RATELIMIT` (paste id into wrangler.toml) `&& wrangler secret put NAMESPACE_API_KEY && wrangler deploy`. The deployed URL is baked into `DEFAULT_SUBNAME_WORKER_URL` (`src/signing-url.ts`). Master key NEVER committed -- `.dev.vars` (gitignored) for `wrangler dev`, `wrangler secret put` for prod.
 
 ## Key Dependencies
 - `@filoz/synapse-sdk` + `@filoz/synapse-core` - Direct SDK for uploads and storage management
@@ -68,7 +82,7 @@ src/ui.ts        - Visual design system (colours, gutter, labels)
 - Resolution: `ezpdpz.eth.limo` serves content from IPFS gateway
 - Mainnet ENS - requires mainnet ETH for gas
 - Auth: `NOVA_PIN_KEY` (private key for writes) or browser signing via fil.focify.eth.limo; `NOVA_WALLET_ADDRESS` or `--wallet` flag for read-only
-- Env vars: `NOVA_WALLET_ADDRESS`, `NOVA_PIN_KEY`, `NOVA_ENS_KEY`, `NOVA_ENS_NAME`, `NOVA_RPC_URL`, `NOVA_PROVIDER_ID`
+- Env vars: `NOVA_WALLET_ADDRESS`, `NOVA_PIN_KEY`, `NOVA_ENS_KEY`, `NOVA_ENS_NAME`, `NOVA_RPC_URL`, `NOVA_PROVIDER_ID`, `NOVA_SUBNAME_PARENT` (default `fcnova.eth`), `NOVA_SUBNAME_WORKER_URL` (set empty to disable free subnames)
 - Browser signing: ENS updates via MetaMask at ens.focify.eth.limo, Filecoin tx at fil.focify.eth.limo
 - Wallet pages branded "FOCify.ME", default to mainnet, logo as focify.png (transparent, not base64)
 - Footer: "Built for & powered by Filecoin Onchain Cloud"
@@ -146,7 +160,7 @@ Test fixes on the deployed clone via Playwright route interception before editin
 
 ### Done
 1. CLI engine: deploy + ENS + verify + `--json` + `--clean` ✅
-2. MCP server: 11 tools for Claude Code/Desktop/Cursor/Windsurf/VS Code ✅
+2. MCP server: 12 tools for Claude Code/Desktop/Cursor/Windsurf/VS Code ✅
 3. Storage management: list, clean, dedup, `--keep`/`--remove` ✅
 4. Enhanced status: pin lookup with CIDv0/v1 normalization ✅
 5. Browser wallet pages: ENS (ens.focify.eth.limo), Filecoin tx (fil.focify.eth.limo), session key (session.focify.eth.limo) ✅
@@ -154,6 +168,7 @@ Test fixes on the deployed clone via Playwright route interception before editin
 7. Demo mode: zero-config calibnet deploys with embedded session key ✅
 8. Config removed: no credentials file, env vars + browser signing only ✅
 9. Auth simplified: session keys removed from non-demo paths, pinKey + walletAddress only ✅
+10. Free offchain ENS subnames: `<label>.fcnova.eth` via Cloudflare Worker + Namespace, owner-bound claims, interactive picker, demo isolation ✅
 
 ### TODO
 - **24-hour demo cleanup** - Cron to remove old calibnet demo pieces via subgraph timestamps

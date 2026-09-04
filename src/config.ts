@@ -3,6 +3,8 @@
  * No credentials file -- auth via browser signing or env vars.
  */
 
+import { DEFAULT_SUBNAME_WORKER_URL, DEFAULT_SUBNAME_PARENT } from "./signing-url.js";
+
 export interface ResolvedConfig {
   pinKey?: string;
   walletAddress?: string;
@@ -10,6 +12,10 @@ export interface ResolvedConfig {
   ensName?: string;
   providerId?: number;
   rpcUrl?: string;
+  /** Nova-owned parent for free gasless subnames (default fcnova.eth). */
+  subnameParent: string;
+  /** Subname issuance Worker URL. Baked-in default; "" disables the feature. */
+  subnameWorkerUrl: string;
 }
 
 /**
@@ -35,7 +41,18 @@ export function resolveConfig(env: NodeJS.ProcessEnv): ResolvedConfig {
     ensName: env.NOVA_ENS_NAME,
     providerId,
     rpcUrl: env.NOVA_RPC_URL,
+    subnameParent: env.NOVA_SUBNAME_PARENT || DEFAULT_SUBNAME_PARENT,
+    // Default to the baked-in Nova Worker; set NOVA_SUBNAME_WORKER_URL="" to disable.
+    subnameWorkerUrl:
+      env.NOVA_SUBNAME_WORKER_URL !== undefined
+        ? env.NOVA_SUBNAME_WORKER_URL
+        : DEFAULT_SUBNAME_WORKER_URL,
   };
+}
+
+/** Whether free gasless subname issuance is available (a Worker URL is set). */
+export function hasSubnameService(config: ResolvedConfig): boolean {
+  return !!config.subnameWorkerUrl;
 }
 
 /**

@@ -13,7 +13,8 @@ Your site gets a permanent, censorship-resistant copy on [Filecoin Onchain Cloud
 - **Low cost** -- a fraction of traditional hosting fees
 - **No servers to manage** -- content is stored onchain, served via IPFS gateways
 - **Works with any site** -- static sites, React, Next.js, Vue, Nuxt, WordPress, Webflow
-- **ENS domains** -- give your decentralized site a human-readable `.eth.limo` address
+- **Free ENS names** -- every deploy can get a gasless `yoursite.fcnova.eth.limo` name, no domain to buy
+- **ENS domains** -- already own an ENS name? Point it at your decentralized site too
 
 ---
 
@@ -82,6 +83,35 @@ When it's done, your site is live at:
 > `https://<cid>.ipfs.dweb.link` -- via a public IPFS gateway (best effort; the public gateways rate-limit automated traffic, so use your own domain with `nova site deploy` for anything that must stay up)
 
 A **CID** (Content Identifier) is a unique fingerprint for your content on IPFS. Same content always produces the same CID.
+
+---
+
+## Get a Free ENS Name
+
+Every deploy can get a free, human-readable name -- no gas, and you don't need to own an ENS domain. Nova issues a name under `fcnova.eth` and points it at your site:
+
+> `https://yoursite.fcnova.eth.limo`
+
+```bash
+# Claim a name as you deploy
+nova deploy ./dist --subname yoursite     # -> yoursite.fcnova.eth.limo
+
+# Or just deploy -- Nova suggests a name and lets you choose
+nova deploy ./dist
+
+# Skip it
+nova deploy ./dist --no-subname
+```
+
+Run interactively and Nova asks you to pick a name, checks whether it's free, and lets you try another if it's taken. Demo deploys get a name too, under `demo.fcnova.eth`:
+
+```bash
+nova demo ./dist --subname yoursite       # -> yoursite.demo.fcnova.eth.limo
+```
+
+Demo names are first-come and can't be re-pointed once taken (there's no wallet to prove they're yours), so pick another if the one you want is in use.
+
+**You own the name.** It's tied to the wallet you deploy with, so only you can change where it points -- re-deploying with the same name updates it to your latest version. This is separate from `--ens`: that points an ENS domain you already own and costs gas; the free name needs neither. Free names are powered by [offchain ENS subnames](https://namespace.ninja) (gasless, served through `eth.limo`).
 
 ---
 
@@ -201,6 +231,7 @@ No wallet needed to start. The AI uses `nova_demo` for instant free deploys, and
 | `nova_demo` | Deploy for free, no wallet needed |
 | `nova_clone` | Clone a website into a deployable directory |
 | `nova_deploy` | Deploy to mainnet with optional ENS |
+| `nova_subname` | Claim or update a free `fcnova.eth` name for a CID |
 | `nova_ens` | Point an ENS domain to a CID |
 | `nova_status` | Check what an ENS domain points to |
 | `nova_info` | Show details for a specific deployment |
@@ -292,6 +323,8 @@ For CI/automation:
 | `NOVA_ENS_NAME` | Default ENS domain |
 | `NOVA_RPC_URL` | Custom Ethereum RPC |
 | `NOVA_PROVIDER_ID` | Storage provider ID |
+| `NOVA_SUBNAME_PARENT` | Parent for free names (default `fcnova.eth`) |
+| `NOVA_SUBNAME_WORKER_URL` | Free-name service URL (set empty to disable) |
 
 ---
 
@@ -366,6 +399,8 @@ For **permanent hosting**:
 | `--screenshots` | clone | Save before/after comparison |
 | `--output <dir>` | clone | Output directory |
 | `--label <text>` | clone, deploy | Label for this deploy (shown in `nova manage`) |
+| `--subname <label>` | deploy, demo | Claim a free `<label>.fcnova.eth` name |
+| `--no-subname` | deploy, demo | Skip the free name |
 | `--ens <name>` | clone, deploy, ens | ENS domain (e.g. `mysite.eth`) |
 | `--rpc-url <url>` | clone, deploy, ens | Custom Ethereum RPC |
 | `--provider-id <id>` | clone, deploy | Storage provider ID |

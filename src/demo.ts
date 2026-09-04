@@ -9,6 +9,7 @@ export const DEMO_SESSION_KEY = "0x7b029c6a96fdd59a3276749b2cea67497eda13d19176a
 export const DEMO_WALLET_ADDRESS = "0x12e83c954051b7c91f70d001f80dc9ff91737b83";
 
 import { isUrl } from "./ui.js";
+import { DEFAULT_SUBNAME_WORKER_URL } from "./signing-url.js";
 
 export interface DemoResult {
   cid: string;
@@ -18,6 +19,9 @@ export interface DemoResult {
   cloned?: boolean;
   sourceUrl?: string;
   pages?: number;
+  /** Throwaway demo subname (e.g. demo-ab12cd34.fcnova.eth), if one was issued. */
+  subname?: string;
+  subnameUrl?: string;
 }
 
 function normalizeUrl(input: string): string {
@@ -31,7 +35,10 @@ function normalizeUrl(input: string): string {
  * Demo deploy: clone a URL or deploy a directory to calibnet.
  * No credentials needed.
  */
-export async function demoDeploy(input: string, opts?: { maxPages?: number; providerId?: number }): Promise<DemoResult> {
+export async function demoDeploy(
+  input: string,
+  opts?: { maxPages?: number; providerId?: number; subname?: string; autoSubname?: boolean },
+): Promise<DemoResult> {
   const { deploy } = await import("./deploy.js");
 
   let deployPath = input;
@@ -76,6 +83,26 @@ export async function demoDeploy(input: string, opts?: { maxPages?: number; prov
     throw err;
   }
 
+  // Free demo subname (best-effort): the CID is the deliverable, the name is a bonus.
+  // Uses the user's chosen label under the demo parent (e.g. happy.demo.fcnova.eth).
+  // Interactive CLI runs pass autoSubname:false and do the naming themselves.
+  let subname: string | undefined;
+  let subnameUrl: string | undefined;
+  if (opts?.autoSubname !== false) {
+    try {
+      const { issueDemoSubname, deriveLabel } = await import("./subname.js");
+      const workerUrl = process.env.NOVA_SUBNAME_WORKER_URL || DEFAULT_SUBNAME_WORKER_URL;
+      const label = deriveLabel(opts?.subname, result.directory);
+      if (workerUrl && label) {
+        const issued = await issueDemoSubname(workerUrl, result.cid, label);
+        subname = issued.fullName;
+        subnameUrl = issued.url;
+      }
+    } catch {
+      // Demo names are a bonus; a Worker outage must never break the demo CID deploy.
+    }
+  }
+
   return {
     cid: result.cid,
     gatewayUrl: result.cid.length <= 63
@@ -86,5 +113,7 @@ export async function demoDeploy(input: string, opts?: { maxPages?: number; prov
     cloned,
     sourceUrl,
     pages,
+    subname,
+    subnameUrl,
   };
 }
